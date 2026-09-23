@@ -1,0 +1,85 @@
+#ifndef DEFINITION_H
+#define DEFINITION_H
+
+#include <Arduino.h>
+
+//////////////////////////////////////////
+
+#define SUPERSCALE_URL_FIELD "superscaleurl"
+#define COMMAND_KEYWORD "command"
+#define COMMANDDOT_KEYWORD "command:"
+#define ULTCOMMAND_KEYWORD "meta:command"
+#define ERASE_COMMAND_KEYWORD "meta:erase"
+#define SSID_KEY "ssid"
+#define PASSWORD_KEY "password"
+
+#define EVENT_NOSUPERSCALE_CONFIG "NOSUPERSCALE_CONFIG"
+#define EVENT_WIFI_CONNECTING "WIFI_CONNECTING"
+#define EVENT_WIFI_ERROR "WIFI_ERROR"
+#define EVENT_WIFI_CONNECTED "WIFI_CONNECTED"
+#define EVENT_WIFI_LOST "WIFI_LOST"
+
+#define EVENT_SYNC_INPROGRESS "SYNC_INPROGRESS"
+#define EVENT_SYNC_SUCCESS "SYNC_SUCCESS"
+#define EVENT_SYNC_ERROR "SYNC_ERROR"
+#define EVENT_SYNC_NOSUPERSCALE "SYNC_NOSUPERSCALE"
+#define EVENT_SYNC_WAIT "EVENT_SYNC_WAIT"
+
+#define EVENT_RFID_BUSY "RFID_BUSY"
+#define EVENT_BUTTON_PRESS "BUTTON_PRESS"
+#define EVENT_RFID_KNOWN "RFID_KNOWN"
+#define EVENT_RFID_UNKNOWN "RFID_UNKNOWN"
+#define EVENT_RFID_COMMAND "RFID_COMMAND"
+#define EVENT_RFID_ATTACHCOMMAND "RFID_ATTACHCOMMAND"
+#define EVENT_RFID_ERASE "RFID_ERASE"
+
+#define EVENT_SET_SUCCESS "SET_SUCCESS"
+#define EVENT_SET_FAIL "SET_FAIL"
+#define EVENT_GENERATE_SUCCESS "GENERATE_SUCCESS"
+#define EVENT_GENERATE_FAIL "GENERATE_FAIL"
+#define EVENT_GENERATEID_INVALID "GENERATEID_INVALID"
+#define EVENT_SAVE_SUCCESS "SAVE_SUCCESS"
+#define EVENT_SAVE_FAIL "SAVE_FAIL"
+#define EVENT_SET_COMMAND_SUCCESS "SET_COMMAND_SUCCESS"
+#define EVENT_SET_COMMAND_FAIL "SET_COMMAND_FAIL"
+#define EVENT_GET_COMMAND_SUCCESS "GET_COMMAND_SUCCESS"
+#define EVENT_GET_COMMAND_FAIL "GET_COMMAND_FAIL"
+
+#define EVENT_PATCH_INPROGRESS "PATCH_INPROGRESS"
+#define EVENT_PATCH_ERROR "PATCH_ERROR"
+#define EVENT_PATCH_SUCCESS "PATCH_SUCCESS"
+
+// color chart: white is virgin, green is ready, yellow is known rfid, white is new ones, blue is saving
+#define LED_INIT_COLOR "white"
+#define LED_WIFI_CONNECTING_COLOR "yellowpulse"
+#define LED_WIFI_FAILED_COLOR "redpulse"
+#define LED_WIFI_CONNECTED_COLOR "yellow"
+#define LED_NO_SUPERSCALE_COLOR "fastredpulse"
+#define LED_ERROR_COLOR "tempored"
+#define LED_SYNC_ERROR_COLOR "tempored"
+#define LED_SYNCED_COLOR "green"
+#define LED_CONFIRM_COLOR "tempoblue"
+
+#define LED_SETINPROGRESS_COLOR "yellow"
+#define LED_SETREADY_COLOR "yellowpulse"
+#define LED_GENERATEINPROGRESS_COLOR "white"
+#define LED_GENERATEREADY_COLOR "whitepulse"
+#define LED_GENERATESAVE_COLOR "fastwhitebluepulse"
+#define LED_SYNCING_COLOR "yellowpulse"
+#define LED_CONFIRMSYNC_COLOR "tempopurple"
+#define LED_SAVEINPROGRESS_COLOR "bluepulse"
+#define LED_CONFIRMSAVE_COLOR "tempoblue"
+
+#define LED_COMMANDINPROGRESS_COLOR "orangepulse"
+#define LED_COMMAND_COLOR "tempoorange"
+#define LED_ATTACHCOMMAND_BLINKCOLOR "purplepulse"
+#define LED_ATTACHCOMMAND_COLOR "fastpurplepulse"
+#define LED_ERASE_BLINKCOLOR "cyanpulse"
+#define LED_ERASE_BLINKFASTCOLOR "fastcyanpulse"
+#define LED_ERASE_COLOR "cyan"
+
+#define BUZZER_BOOT "on"
+
+void dispatchEventSM(String eventname);
+
+#endif

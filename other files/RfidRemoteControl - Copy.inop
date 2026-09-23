@@ -1,0 +1,172 @@
+/*
+	Ideas:
+		- Http client
+		- RFID
+		- Buzzer : vbeeper
+		- LED
+
+	Once we find a tag:
+		- we translate it into an ID
+			- known id vs unknown ids
+		- we build a request
+		- we make an http request on superscale to set this bloc
+		- if button is pressed we save
+
+
+	=> have a list of known IDs, we load from disk, we update on the server, but we keep a local copy.
+		=> we only update it if it's a new id
+
+ */
+
+// Supported platforms ESP32BUILD, x86BUILD
+/*
+#ifndef x86BUILD
+#define ESP32BUILD
+#include <Ticker.h>
+#endif
+
+#include <mylib.h>
+#include <device/RFIDReader.h>
+#include <device/Beeper.H>
+#include <FS/SimpleFS.H>
+#include <datastruct/GenString.H>
+
+#include "WifiManager.h"
+#include <Button2.h>
+*/
+#include "RGBLed.h"
+/*
+//#include <device/LedExpress.h>
+
+#define SAVEBUTTON_PIN 36
+#define LED_BUILTIN 2
+
+// Others pins are 3v3, Gnd, SDA/SS=5, SCK=18, MOSI=23, MISO=19, RST=21, IRQ=17
+#define SS_PIN          5
+#define RST_PIN         0
+#define IRQ_PIN         17
+
+//#define LED_PIN LED_BUILTIN
+#define BUZZER_PIN 4
+*/
+#define LED_RED_PIN 27
+#define LED_GREEN_PIN 14
+#define LED_BLUE_PIN 12
+
+#define CONFIGFILE "config.json"
+#define RFIDFILE "RFID2ID.json"
+
+#define LED_INIT_COLOR "white"
+#define LED_WIFI_CONNECTED_COLOR "green"
+#define LED_WIFI_FAILED_COLOR "redpulse"
+#define LED_NO_CONFIG_COLOR "bluered"
+#define LED_NO_SUPERSCALE_COLOR "fastredpulse"
+#define LED_BUSY_COLOR "tempored"
+#define LED_NO_CONFIG_URL_COLOR "redpulse"
+#define LED_ID_FOUND_COLOR "tempoyellow"
+#define LED_NEW_ID_COLOR "tempowhite"
+
+/*
+#include "DataManager.h"
+*/
+RGBLed rgbled(LED_RED_PIN, LED_GREEN_PIN, LED_BLUE_PIN);
+/*
+Button2 savebutton = Button2(SAVEBUTTON_PIN);
+
+//LedExpress ledexpress(LED_PIN);
+
+VBeeper vbeeper;
+RFIDReader reader;
+
+//void ledFadeEnded(){}
+
+DataManager dataman;
+
+
+void buttonsave(Button2& btn) {
+	Serial.println("Save button pressed!");
+	dataman.triggerSave();
+}
+*/
+void setup() {
+	Serial.begin(115200); // Initialize serial communications with the PC
+	while (!Serial);      // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
+/*
+	//	ledcAttach(LED_PIN, LEDC_BASE_FREQ, LEDC_TIMER_12_BIT);//	ledcFadeWithInterrupt(LED_PIN, 0, 4095, 1000, ledFadeEnded);
+	//	ledexpress.flashPattern("accelerating pulse",1000);
+//	ledexpress.flashPattern("wakeup",3000,"Expo");
+//	rgbled.fadeTo(255, 255, 255, 1000);
+	rgbled.playColor(LED_INIT_COLOR);
+	return;
+	vbeeper.init(BUZZER_PIN);	// init vbeeper
+	vbeeper.playSpecial("on"); // board started
+	//  beeper.simpleBeep(STARTFREQ, STARTLENGTH);
+
+	//	pinMode (LED_BUILTIN, OUTPUT);
+	//	digitalWrite(LED_BUILTIN, HIGH);
+	SIMPLEFS.begin();
+	SIMPLEFS.printInfo();
+
+	// then load the distant file from superscale too
+	dataman.init(CONFIGFILE,RFIDFILE);
+	dataman.setVBeeper(&vbeeper);
+	dataman.setRGBLed(&rgbled);
+
+//	pinMode(MOSFET_PIN,OUTPUT);
+//	digitalWrite(MOSFET_PIN,HIGH);
+	reader.init(SS_PIN,RST_PIN,IRQ_PIN);
+
+	Serial.println(String()+"preconnect millis: "+millis());
+	connectWifi();
+
+	savebutton.setPressedHandler(buttonsave);
+	Serial.println(F("End setup"));*/
+}
+
+// 65mA after setup, 18.8mA in deep sleep, 150mA peak on start up 110mA on read tag
+
+/**
+ * Main loop.
+ */
+unsigned ts=0;
+String tagwaiting;
+unsigned lastcount=0;
+unsigned wificonnectedprev=false, connectionfailedprev=false;
+void loop() {
+	rgbled.update();
+	//return;
+/*	dataman.update();
+	savebutton.loop();
+	loopWifi();
+	//reader.mfrc522_fast_Reset();
+	String tag =reader.readCard();
+	if(!tag.isEmpty()) {
+		dataman.tagFound(tag);
+	//	dataman.foundTag(tag);
+		//		tagwaiting=tag;
+		bNewInt = false;
+		ts=0;
+	} else dataman.tagNotFound();
+	if(connectionfailed && !connectionfailedprev) {
+		vbeeper.playSpecial("fail"); // board started
+//		rgbled.pulse(0, 0, 0, 0, 255, 0, 1000);
+		rgbled.playColor(LED_WIFI_FAILED_COLOR);
+	}
+	connectionfailedprev=connectionfailed;
+	if(wificonnected) {
+		if(!wificonnectedprev) {
+			vbeeper.playSpecial("spring"); // board started
+//			rgbled.fadeTo(0, 255, 0, 1000);
+			//rgbled.playColor(LED_WIFI_CONNECTED_COLOR);
+		}
+
+		//	dataman.connectedNetwork();
+
+	}
+	wificonnectedprev=wificonnected;
+
+	ts=millis();*/
+	delay(50);
+
+}
+

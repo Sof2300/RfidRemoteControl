@@ -1,0 +1,297 @@
+<html>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<style>
+    * {
+        font-family: Verdana;
+    }
+
+    fieldset {
+        border: none;
+    }
+
+    input, select, textarea, button {
+        font-size: inherit;
+    }
+
+    td {
+        padding: 3px
+    }
+
+    input, select {
+        margin-left: 3px;
+        margin-right: 3px
+    }
+
+    button {
+        margin-left: 5px;
+        margin-right: 5px
+    }
+
+    table {
+        border: 1px solid darkgray;
+        border-collapse: collapse;
+    }
+
+</style>
+
+<script src="Component.js" type="text/javascript"></script>
+<script src="ComponentInteractive.js" type="text/javascript"></script>
+
+<script src="CycleTimerUI.js" type="text/javascript"></script>
+<script src="PageUI.js" type="text/javascript"></script>
+
+
+<script>
+    /*
+
+.dygraph-axis-label-y1 {
+    position:absolute;
+    left: -7px !important;
+}
+    .dygraph-legend { text-align: right; }
+    .dygraph-roller {
+        position: absolute;
+        x: 10;
+        z-index: 10;
+    }
+    */
+    var DEBUGOFFLINE = (location.origin.substr(0, 16) == "http://localhost");//(location.origin=="file://");
+
+    /*
+    <script src="bundle.js" type="text/javascript">< /script>
+    */
+
+    /**********************************************/
+    /**********************************************/
+
+    var geid = document.getElementById.bind(document);
+
+    function loadRemote(addr, f, err) {
+        var xhttp = new XMLHttpRequest();
+        xhttp.addEventListener("load", function () {
+            if (this.status != 200) err.bind(this)(); else f.bind(this)();
+        });
+        if (err) xhttp.addEventListener("error", err);
+        xhttp.open("GET", addr);
+        xhttp.setRequestHeader('x-Date', Math.floor((Date.now()) / 1000));
+        let offset = -(new Date().getTimezoneOffset()) / 60;
+        xhttp.setRequestHeader('x-TimeZone', offset);
+        xhttp.send();
+    }
+
+    function setDisabledIds(ids,newstate) {
+        console.log("setDisabledIds "+newstate+" "+ids);
+        for(var k in ids) if(geid(ids[k])) geid(ids[k]).disabled=newstate;}
+
+    function disenableload(url,idarray){
+        setDisabledIds(idarray,true);
+        function f(){
+            setTimeout(function(){enableloadjson(idarray)},200);
+            //enableloadjson(idarray);
+        }
+        loadRemote(url,f,f);
+    }
+    function enableloadjson(idarray){
+        if(loading) {setDisabledIds(idarray,false);return;} // don't reload if previous load did not finish
+        var timing=new Date().getTime();
+        //	var it=geid("volume");
+        //	if(it) it.style.color="lightgray";
+        loadRemote('/json',function(){
+                setDisabledIds(idarray,false);
+                loading=false;
+                geid("content").disabled=false;
+                console.log('enable json load delay:'+(new Date().getTime()-timing)/1000);
+                reqListener.bind(this)();}
+            ,function(){loading=false;geid("content").disabled=true;});    //stay disabled
+        loading=true;
+    }
+
+    //////////////////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////////////////////////////////
+    // all timestamps are in seconds
+    var jsonsampleobj = {
+        "data": {
+            "switch-state":1,
+            "cycle-state":1,
+            "on-duration-sec":60,
+            "cycle-duration-sec":600,
+            "relay-pin":6,
+            "last-start":800,
+            "first-start":10,
+            "current-timestamp":1000
+        },
+        "config": {
+            "mode": "ST",
+            "ssid": "Bamboo",
+            "password": "",
+            "mdns":"cycletimer",
+            "free-space": "0 bytes (100%)"
+        }
+    };
+
+    var pageUI;
+
+    function showPage(tobj) {
+        //console.log(tobj);
+        if (DEBUGOFFLINE) tobj = jsonsampleobj;
+        var item = document.getElementById("content");
+        item.textContent = "";
+
+        pageUI = new PageUI(tobj, item);
+
+        if (DEBUGOFFLINE) {
+            //    setInterval(function(){updatePage(tobj);},6000);
+        }
+    };
+
+
+    function updatePage(tobj) {
+        pageUI.update(tobj);
+    }
+
+
+    /*
+    function dataloaded(){
+        console.log(this.responseText);
+
+        pageUI.updateDataFile(this.responseText);
+
+    }*/
+    var firstlog=false;
+
+
+    function logloaded(){
+        // console.log(this.responseText);
+        var jsonstring=this.responseText;
+        while(jsonstring[jsonstring.length-1]=='\n') jsonstring=jsonstring.substr(0,jsonstring.length-1);
+        var arr=jsonstring.split("\n");
+        arr.reverse();
+        var nstring=arr.join("\n");
+        geid("tarea").textContent=nstring;
+    }
+
+    var loadingData=false;
+    function loadLogFile(){
+        if(loadingData) return; // don't reload if previous load did not finish
+        var timing=new Date().getTime();    //	var it=geid("volume");    //	if(it) it.style.color="lightgray";
+        geid("tarea").disabled=true;
+        geid("eraselog").disabled=true;
+        loadRemote('logfile.txt',function(){
+                loading=false;
+                geid("tarea").disabled=false;
+                geid("eraselog").disabled=false;
+                console.log('log load delay:'+(new Date().getTime()-timing)/1000);
+                logloaded.bind(this)();}
+            ,function(){loading=false;geid("tarea").disabled=true;});    //stay disabled
+        loading=true;
+    }
+    function eraseLogFile(){
+        if(loadingData) return; // don't reload if previous load did not finish
+        var timing=new Date().getTime();    //	var it=geid("volume");    //	if(it) it.style.color="lightgray";
+        geid("tarea").disabled=true;
+        geid("tarea").textContent="";
+        geid("eraselog").disabled=true;
+        loadRemote('/eraselog',function(){
+                loading=false;
+                geid("tarea").disabled=false;
+                geid("eraselog").disabled=false;
+                loadLogFile.bind(this)();}
+            ,function(){loading=false;geid("tarea").disabled=true;geid("eraselog").disabled=false;});    //stay disabled
+        loading=true;
+    }
+
+    function isNumber(teststring) {
+        if(teststring.length==0) return false;
+        console.log(teststring+":"+!isNaN(Number(teststring)));
+        return !isNaN(Number(teststring));
+    }
+
+
+
+    function pathtosubobjects(otc) {
+        var nobj = {};
+        for (var o in otc) {
+            if (typeof o == "string" && o.indexOf("/") >= 0) {
+                let tab = o.split("/"), telem = nobj;
+                for (let i = 1; i < tab.length; i++) {
+             //       console.log(tab[i]);
+                    if (!telem[tab[i]]) telem[tab[i]] = {};
+                    if (i == tab.length - 1) telem[tab[i]] = otc[o];
+                    telem = telem[tab[i]];
+                }
+
+            } else nobj[o] = otc[o];
+        }
+        return nobj;
+    }
+
+
+    function reqListener() {
+        console.log(this.responseText);
+        var jsonstring = this.responseText;
+        var t = jsonstring;//
+        jsonstring.replace(/\n/g, "\\n");
+        var tobj = JSON.parse(t);
+        tobj = pathtosubobjects(tobj);
+        if (!init) {
+            showPage(tobj);
+            init = true;
+        } else updatePage(tobj);
+        dataobj = tobj;
+    }
+    var firstload=true;
+    function loadjson() {
+        if (loading) return; // don't reload if previous load did not finish
+        var timing = new Date().getTime();
+
+        //	var it=geid("volume");
+        //	if(it) it.style.color="lightgray";
+        loadRemote('/json', function () {
+                loading = false;
+                geid("content").disabled = false;
+                console.log('json load delay:' + (new Date().getTime() - timing) / 1000);
+                reqListener.bind(this)();
+                if(firstload) {loadLogFile();firstload=false;}
+            }
+            , function () {
+                loading = false;
+                geid("content").disabled = true;
+            });    //stay disabled
+        loading = true;
+    }
+
+    var loading = false;
+    var init = false, dataobj = {};
+
+    function startScript() {
+        // loadMultiJS(["Component.js","ComponentInteractive.js","CommandUI.js","PageUI.js"],function(){
+        if (DEBUGOFFLINE) {
+            showPage();
+            return;
+        }
+        loading = false;
+
+        loadjson();
+
+        var duration = 3000;
+        setInterval(loadjson, duration);
+        setInterval(loadLogFile, 10000);
+        //});
+    }
+
+
+</script>
+<div style="float:right;font-size: 80%"><a target="_blank" href="readme.txt">Help</a></div>
+<body onload="startScript()">
+
+
+<h2>CycleTimer</h2>
+<fieldset id="content">Loading content...</fieldset>
+<br><br>
+<label style="font-size:70%;margin-left:15px;color:lightgray;font-weight:bold">Log file :</label> <button id="eraselog" onclick="eraseLogFile()" style="font-size: 60%">erase log file</button>
+<textarea id="tarea" readonly rows=10  style="margin:5px;width:100%;white-space: pre;font-size:70%">
+</textarea>
+</body>
+
+</html>
