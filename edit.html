@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<meta http-equiv="Cache-control" content="public">
+
+<head>
+    <style>
+        h1 {
+            font-size: 1.75em;
+            margin: .67em 0;
+        }
+
+        body {
+            font-family: FreeSans, Arimo, 'Droid Sans', Helvetica, Arial, sans-serif;
+        }
+    
+    </style>
+	 
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+ 
+ <script>
+ 
+ function postURL(url,params,cb){
+		function paramToArg(param){
+			var arg="";
+			for(var k in param) {if(arg) arg+="&";arg+=k+"="+param[k]+"";} 
+			return arg;
+		}
+		var xhr = new XMLHttpRequest();
+		xhr.onreadystatechange=function(){if (this.readyState == 4 )cb(xhr.responseText,xhr); }
+		// xhr.withCredentials = true;
+		xhr.open("POST", url, true);
+
+		//Send the proper header information along with the request
+		xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+		var p = paramToArg(params);
+
+		console.log("posting request with params:"+p);
+		xhr.send(p);
+	}
+ 
+ window.onload=function(){
+
+ 	var json='{"weight":0.5,"sum":0.00,"current":"Gray/Elm Oyster","currentprice":10.00,"price":5.00,"prices":{"Gray/Elm Oyster":10.00,"King/Golden/Pink Oyster":12.90,"Shiitake/Hericium":12.90}}';
+
+		console.log("ok");
+	//	var url_string = window.location.href;
+		var url = new URL(window.location.href);
+		var c = url.searchParams.get("fileurl");
+		if(!c) c="/config.json";
+		document.getElementById("fileurl").value=c;
+	 if(c[0]=="\"" && c[c.length-1]=="\"") c=c.substr(1), c=c.substr(0,c.length-1);
+	//	 if(c) c=getAbsUrlFrom(c,url.origin+url.pathname);
+		if(c) c= new URL(c,url.origin+url.pathname).href;
+		console.log(c);
+ 		loadFile(c);
+ }
+ 
+ var bcol="black";
+ function statusColor(acol){
+	 document.getElementById("status").style.color=acol;
+	 setTimeout(function(){
+		 document.getElementById("status").style.color=bcol;	 
+	 },2000);
+	
+ }
+ 
+ function loadFile(c){
+	function reqListener (t,xhttp) {
+		if(xhttp.status==200) {
+		  	var text=xhttp.responseText;  //	while (text.indexOf('\r\n') !== -1) text = text.replace('\r\n', '\n');
+			document.getElementById("tarea").value=text;
+			document.getElementById("status").innerText="File loaded";
+			statusColor("green");
+		}
+		if(xhttp.status==403){
+			var text=xhttp.responseText;			
+			document.getElementById("status").innerText=text;
+			statusColor("red");
+		}
+	  	console.log(xhttp.responseText);
+	}
+	var pwd=document.getElementById("passwd").value;
+/*	var oReq = new XMLHttpRequest();
+	oReq.addEventListener("load", reqListener);
+	oReq.open("GET", c+"?password="+pwd);
+	oReq.send();	*/ 
+	
+	postURL(c,{password:pwd},reqListener);
+
+	
+ }
+ 
+ function onLoadButtonClick(){
+	var c= document.getElementById("fileurl").value;
+	var url = new URL(window.location.href);
+	 if(c) c= new URL(c,url.origin+url.pathname).href;
+		console.log(c);
+	 loadFile(c);
+ }
+ 
+ 
+ function onSaveButtonClick(){ 
+	var c= document.getElementById("fileurl").value;	// how to choose argument or url
+	var url = new URL(window.location.href);
+	if(c) c= new URL(c,url.origin+url.pathname).href;
+	console.log(c);
+	 // write file to server
+	var r = confirm("This will replace the previous content of file "+c+" with the content on the screen. Are you sure you want to continue ?");
+	if (r == true) {
+		var tval=document.getElementById("tarea").value;
+		var usernam=document.getElementById("username").value;
+		var pwd=document.getElementById("passwd").value;
+
+		// TODO: should escape & in the content of text field before writing
+		tval=encodeURIComponent(tval);//tval.replaceAll("&","%26");
+		postURL("/filewrite",{path:c,username:usernam, password:pwd, content:tval},function(t,xhttp){
+			 if(xhttp.status==200) {
+				 console.log("file saved");
+				 statusColor("green");
+			 } else statusColor("red");
+			 document.getElementById("status").innerText=t;
+			 });
+	} else {
+	}
+ }
+ function getUrlVars() {
+	 var vars = {};
+	 var parts = window.location.href.replace(/[?&]+([^=&]+)=([^&]*)/gi, function(m,key,value) {
+		 vars[key] = value;
+	 });
+	 return vars;
+ }
+ /*
+
+
+  */
+ </script>
+ 
+</head>
+
+<body>
+	<title>SuperScale edit</title>
+    <h1 id="title">SuperScale-Client file edit</h1>
+    <label for="url">File URL:</label>
+	<input id="fileurl" type="url" name="fileurl" value="./config.json" placeholder="/config.json"   pattern="https://.json" size="25"   required>
+	<div style="display:none">
+	&nbsp;<br> username:<input id="username" type="url"  value="admin"  size="15">/ password:
+	<input id="passwd" type="password" size="15">
+	</div>
+	<input id="loadbutton" type="button" value="Load" onclick="onLoadButtonClick();"> 
+	<input id="savebutton" type="button" value="Save" onclick="onSaveButtonClick();">
+	<br>
+	<div id="status" style="text-align:center;background-color:#F8F8F8;margin-top:15px"> server ok</div>
+	<div id="div_e" style="width:90%"><br>
+	<fieldset style="width:100%">
+	 
+	<textarea id="tarea"  rows=25  style="width:100%;white-space: pre;">
+	</textarea>
+    <br>&emsp;&emsp;
+ 
+ 
+ 
+	</body>
+
+</html>

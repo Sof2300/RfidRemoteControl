@@ -15,7 +15,7 @@ DynamicJsonDocument parseJSON(String filecontent) {
 	return doc;
 }
 
-String loadFileToString(String filename){//	 Serial.println(String()+"loadJSON:: preread :"+"/"+filename);
+String loadFileToString(String filename){	 Serial.println(String()+"loadJSON:: preread :"+"/"+filename);
 	String filecontent=SIMPLEFS.readFileToString(String()+"/"+filename);
 	//	Serial.println(String()+"File "+filename+" content1 :"+filecontent);
 	filecontent=replaceAll(filecontent,"http://","XHTTP");
@@ -74,8 +74,11 @@ When the splice shortens the file and the modified region straddles or is after 
 Padding with spaces when shrinking leaves garbage that later CRC / size calculations still see until the next full rewrite.
 No file truncation after a shrink → file size reported by the FS can stay larger than the logical content.
  * */
-bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset, String newContent) {
 
+#define CHUNK 1024
+
+bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset, String newContent) {
+	Serial.println("[SYNC] Spliced IN-PLACE started\n");
 	size_t beforeSize = SIMPLEFS.fileSize(syncFilename.c_str());
 
 	FileFS* f = SIMPLEFS.openFile(syncFilename.c_str(), "r+");
@@ -89,8 +92,8 @@ bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset
 
 	if (diff > 0) {
 		// SHIFT RIGHT (Iterate Backwards)
-		const size_t CHUNK = 512;
-		uint8_t buf[CHUNK];
+//		const size_t CHUNK = 512;
+		uint8_t buf[CHUNK+8];
 		size_t bytesToShift = tailSize;
 
 		while (bytesToShift > 0) {
@@ -137,7 +140,7 @@ bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset
 
 	SIMPLEFS.closeFile(f);
 
-//	SYNC_LOG2("[SYNC] Spliced IN-PLACE OK. Diff: %d bytes.\n", diff);
+	Serial.println("[SYNC] Spliced IN-PLACE OK. Diff: %d bytes.\n", diff);
 	return true;
 }
 

@@ -2,6 +2,8 @@
 #define DATAMANAGER_H
 
 #include <map>
+#include <vector>
+#include <utility>
 
 #include <WiFi.h>
 
@@ -47,6 +49,16 @@ class DataManager {
 
 	String currentCommand;
 
+	// --- Dedicated flag + queue for sendMessage ---
+	// Kept separate from requestbusy so RFID operations are never blocked by a UI message.
+	bool _messageBusy = false;
+	std::vector<std::pair<String, int>> _messageQueue;
+	SemaphoreHandle_t _msgMutex = xSemaphoreCreateMutex();
+
+	// --- Deduplication: track last sent message to prevent duplicates ---
+	String _lastSentMessage = "";
+	int _lastSentDuration = -1;
+
 	//	AsyncHttpClient httpClient;
 
 public:
@@ -58,6 +70,8 @@ public:
 	String getCurrentID(){return currentID;}
 	void fetchSetId() {fetchSetId(currentID);}
 	String getCurrentCommand(){return currentCommand;}
+	String getLastUndoDescription(){return rfiddb.getLastUndoDescription();}
+	bool canUndo(){return rfiddb.canUndo();}
 
 	// Check if the generated ID already exists in the local database
 	bool validateGeneratedId(String id) {
@@ -133,6 +147,10 @@ public:
 			dispatchEventSM(EVENT_RFID_ATTACHCOMMAND);
 		} else if(structag.type==StructuredTag::ERASE) {
 			dispatchEventSM(EVENT_RFID_ERASE);
+		} else if(structag.type==StructuredTag::UNDO) {
+			dispatchEventSM(EVENT_RFID_UNDO);
+		} else if(structag.type==StructuredTag::RFID_UNDO) {
+			dispatchEventSM(EVENT_RFID_RFIDUNDO);
 		} else if(structag.type==StructuredTag::COMMAND) {
 			currentCommand=structag.command;
 			dispatchEventSM(EVENT_RFID_COMMAND);
@@ -149,13 +167,37 @@ public:
 	}
 
 
+	bool isErrorPayload(String payload) {
+		payload.trim();
+		return payload.length() == 0 ||
+			payload.equalsIgnoreCase("NOTOK") ||
+			payload.equalsIgnoreCase("ERROR") ||
+			payload.indexOf("error") >= 0 ||
+			payload.indexOf("ERROR") >= 0 ||
+			payload.indexOf("id null") >= 0 ||
+			payload.indexOf("ID NULL") >= 0;
+	}
+
+	bool isValidGeneratedIdPayload(String payload) {
+		payload.trim();
+		return payload.length() > 0 &&
+			!payload.equalsIgnoreCase("OK") &&
+			!payload.equalsIgnoreCase("NOTOK") &&
+			!payload.equalsIgnoreCase("ERROR") &&
+			payload.indexOf("error") < 0 &&
+			payload.indexOf("ERROR") < 0 &&
+			payload.indexOf("id null") < 0 &&
+			payload.indexOf("ID NULL") < 0;
+	}
+
 	String getPayload(String content){
 		String payload=AsyncHttpRequest::getPayload(content);
 		if(payload.indexOf("html")>-1) {
 			if(payload.indexOf("NOTOK")>-1) payload="NOTOK";
 			else if(payload.indexOf("OK")>-1) payload="OK";
 		}
-		Serial.println(String()+"getPayload final content: "+ payload);
+		payload.trim();
+	//	Serial.println(String()+"Got response : "+ payload);
 		return payload;
 	}
 
@@ -271,19 +313,16 @@ public:
 			Serial.println(String()+"fetchGenerate success for url :"+req->getUrl());
 			String payload=getPayload(content->c_str());
 			Serial.println(String()+"Content: "+ payload);
-			if(payload!="NOTOK") {
-				if(currentID!=payload) {				// updating ID
+			if(isErrorPayload(payload)) {
+				dispatchEventSM(EVENT_GENERATE_FAIL);
+				idset=false;
+			} else {
+				if(isValidGeneratedIdPayload(payload) && currentID!=payload) {
 					Serial.println(String()+"DataManager:fetchGenerate payload: "+payload);
-					if(payload!="OK") currentID=payload;
+					currentID=payload;
 				}
 				idset=true;
 				dispatchEventSM(EVENT_GENERATE_SUCCESS);
-				if(payload!="OK") currentID=payload;
-			} else {
-				dispatchEventSM(EVENT_GENERATE_FAIL);
-				idset=false;
-				currentID="";
-				currentTag="";
 			}
 			newid=true;
 			requestbusy=false;
@@ -313,14 +352,14 @@ public:
 			Serial.println(String()+"DataManager::fetchSave success for url "+req->getUrl());
 			//			Serial.printf("\n--- SUCCESS ---\n%s\n", content->c_str());
 			String payload=getPayload(content->c_str());
-			if(payload!="NOTOK") {
-				if(currentID!=payload) {				// updating ID
+			if(isErrorPayload(payload)) {
+				idset=false;
+				dispatchEventSM(EVENT_SAVE_FAIL);
+			} else {
+				if(isValidGeneratedIdPayload(payload) && currentID!=payload) {
 					Serial.println(String()+"DataManager:fetchSave payload: "+payload);
-					if(payload!="OK") {
-						currentID=payload;
-						//rfiddb.set(currentTag, currentID);
-						if(isNewID) isNewID=false;
-					}
+					currentID=payload;
+					if(isNewID) isNewID=false;
 				}
 				idset=true;
 				saved=true;
@@ -329,9 +368,6 @@ public:
 					//rfiddb.set(currentTag, currentID);
 					isNewID = false;
 				}
-			} else {
-				idset=false;
-				dispatchEventSM(EVENT_SAVE_FAIL);
 			}
 			Serial.println(String()+"Superscale is "+payload);
 			//			if(vbeep) vbeep->playSpecial("beep");
@@ -379,7 +415,8 @@ public:
 				dispatchEventSM(EVENT_SAVE_FAIL);
 				return;
 			}
-			saveUrl=saveUrl+"?id="+currentID+"&command="+urldate+"&argument=TODAY()&nohtml=1";
+			//saveUrl=saveUrl+"?id="+currentID+"&command="+urldate+"&argument=TODAY()&nohtml=1";
+			saveUrl=saveUrl+"?command="+urldate+"&argument=TODAY()&nohtml=1";
 			Serial.println("Saving NEW ID Remotely: " + saveUrl);
 
 			// 2. Local Save: add to DB and update the JSON file
@@ -394,27 +431,136 @@ public:
 	}
 
 
-	void update(){
-		/*	httpClient.update();
-		if (httpClient.isFinished()) {
-			if (httpClient.isSuccess()) {
-				// Extract the payload dynamically
-				String data = httpClient.getPayload();
-				Serial.println("Data received: " + data);
-
-				// Trigger your buzzer / ID loaders here
-				urlLoaded(data);
-				//vbeep->playSpecial("agree");
+	String urlEncode(String str) {
+		String encoded = "";
+		char hexBuf[4];
+		for (unsigned int i = 0; i < str.length(); i++) {
+			char c = str.charAt(i);
+			if (c == ' ') {
+				encoded += '+';
+			} else if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+				encoded += c;
 			} else {
-				Serial.println("Request Failed!");
-				if(vbeep) vbeep->playSpecial("doublefail");
+				encoded += '%';
+				sprintf(hexBuf, "%02X", (unsigned char)c);
+				encoded += hexBuf;
 			}
-			// 3. Clear the state so this block doesn't keep running continuously
-			httpClient.resetState();
 		}
-		 */
+		return encoded;
+	}
+
+	// Queue a message for sending.  NEVER fires HTTP directly — all actual
+	// requests are created from update() on the main-loop task, avoiding heap
+	// corruption that occurs when new AsyncHttpRequests are created from inside
+	// another request's deferredCallbackTask FreeRTOS context.
+	void sendMessage(String message, int duration) {
+		size_t qSize = 0;
+		if (_msgMutex) xSemaphoreTake(_msgMutex, portMAX_DELAY);
+		_messageQueue.push_back(std::make_pair(message, duration));
+		qSize = _messageQueue.size();
+		if (_msgMutex) xSemaphoreGive(_msgMutex);
+		Serial.println(String() + "sendMessage: queued \"" + message + "\" (queue size: " + qSize + ")");
+	}
+
+	void fetchUndo(){
+		String requrl=String()+baseUrl+"undo?nohtml=1";
+		requestbusy=true;
+		AsyncHttpRequest::fetch(
+				requrl,
+				[this](const StreamString *content, AsyncHttpRequest *req) {
+			Serial.println(String()+"fetchUndo success for url:"+req->getUrl());
+			String payload=getPayload(content->c_str());
+			Serial.println(String()+"fetchUndo response: "+payload);
+			if(payload=="OK") {
+				dispatchEventSM(EVENT_UNDO_SUCCESS);
+			} else {
+				dispatchEventSM(EVENT_UNDO_FAIL);
+			}
+			requestbusy=false;
+		},
+		[this](const String &error, AsyncHttpRequest *req) {
+			Serial.println(String()+"fetchUndo failure for url:"+req->getUrl());
+			Serial.printf("Reason: %s\n", error.c_str());
+			dispatchEventSM(EVENT_SYNC_NOSUPERSCALE);
+			requestbusy=false;
+		}
+		);
+	}
+
+	void fetchRfidUndo(){
+		requestbusy=true;
+		Serial.println("DataManager: Performing RFID undo operation");
+		bool success = rfiddb.performUndo();
+		if(success) {
+			dispatchEventSM(EVENT_RFIDUNDO_SUCCESS);
+		} else {
+			dispatchEventSM(EVENT_RFIDUNDO_FAIL);
+		}
+		requestbusy=false;
+	}
+
+	// Called from the main loop.  Drains the pending-message queue safely.
+	void update(){
+		// --- Send queued display messages from the main-loop context ---
+		String msgToSend;
+		int durToSend = 0;
+		bool shouldSend = false;
+
+		if (_msgMutex) xSemaphoreTake(_msgMutex, portMAX_DELAY);
+		if (!_messageBusy && !_messageQueue.empty()) {
+			auto msgDur = _messageQueue.front();
+			_messageQueue.erase(_messageQueue.begin());
+			msgToSend = msgDur.first;
+			durToSend = msgDur.second;
+			_messageBusy = true;
+			shouldSend = true;
+		}
+		if (_msgMutex) xSemaphoreGive(_msgMutex);
+
+		if (shouldSend) {
+			_sendMessageNow(msgToSend, durToSend);
+		}
 	}
 private:
+	// Actually fires the HTTP request.  MUST only be called from the main-loop
+	// task (via update()), never from an async callback / FreeRTOS task.
+	void _sendMessageNow(const String& message, int duration) {
+		// --- Deduplication: skip if same message with same duration was just sent ---
+		if (message == _lastSentMessage && duration == _lastSentDuration) {
+			Serial.println(String() + "sendMessage: skipping duplicate message \"" + message + "\" with duration " + duration);
+			if (_msgMutex) xSemaphoreTake(_msgMutex, portMAX_DELAY);
+			_messageBusy = false;
+			if (_msgMutex) xSemaphoreGive(_msgMutex);
+			return;
+		}
+
+		String encodedMessage = urlEncode(message);
+		String requrl = String() + baseUrl + "message?text=" + encodedMessage + "&duration=" + duration + "&nohtml=1";
+		AsyncHttpRequest::fetch(
+			requrl,
+			[this](const StreamString *content, AsyncHttpRequest *req) {
+				Serial.println(String() + "sendMessage success for url:" + req->getUrl());
+				String payload = getPayload(content->c_str());
+				Serial.println(String() + "sendMessage response: " + payload);
+				if (_msgMutex) xSemaphoreTake(_msgMutex, portMAX_DELAY);
+				_messageBusy = false;
+				if (_msgMutex) xSemaphoreGive(_msgMutex);
+				// If another message was queued while busy, update() will pick it up.
+			},
+			[this](const String &error, AsyncHttpRequest *req) {
+				Serial.println(String() + "sendMessage failure for url:" + req->getUrl());
+				Serial.printf("Reason: %s\n", error.c_str());
+				if (_msgMutex) xSemaphoreTake(_msgMutex, portMAX_DELAY);
+				_messageBusy = false;
+				if (_msgMutex) xSemaphoreGive(_msgMutex);
+			}
+		);
+
+		// --- Update last sent message on successful send initiation ---
+		_lastSentMessage = message;
+		_lastSentDuration = duration;
+	}
+
 	// --- Function to load config.json into the map ---
 	bool loadConfig(String filename) {
 		Serial.println("Loading config file: " + filename);

@@ -1,4 +1,9 @@
-C5A522DE,T101
-62F8C256,command:fruit
 F53E345B,meta:command
-66AD4EA5,meta:erase
+C5A522DE,meta:erase
+45CAF8DD,meta:undo
+75A622DE,meta:rfid-undo
+62F8C256,command:fruit
+C2E1CB56,command:contamn
+04942665D32A81,K1
+D24DCC56,S68
+E230C656,S69

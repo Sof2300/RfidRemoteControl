@@ -12,9 +12,23 @@
 #define DIY_TIMEOUT 1
 #endif
 
-#if DIY_TIMEOUT
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
+#include <freertos/semphr.h>
+#include <esp_system.h>
+
+#ifndef DEL_TASK_STACK_SIZE
+#define DEL_TASK_STACK_SIZE 4096
+#endif
+
+// Set to 1 to enable task stack and heap memory diagnostics in Serial monitor, 0 to disable
+#ifndef DEBUG_ASYNC_HTTP_MEMORY
+#define DEBUG_ASYNC_HTTP_MEMORY 0
+#endif
+
+// Set to 1 to enable HTTP request/response logging in Serial monitor, 0 to disable
+#ifndef DEBUG_HTTP_REQUESTS
+#define DEBUG_HTTP_REQUESTS 1
 #endif
 
 #pragma warning( push )
@@ -26,6 +40,8 @@
 
 #include <functional>
 #include <string>
+
+#include "debugtools.h"
 
 #define TIMEOUT_MS 10000
 
@@ -54,6 +70,7 @@ private:
 	volatile bool _callbacksClaimed = false;
 	volatile bool _callbacksRunning = false;
 	volatile bool _deleteClaimed = false;
+	SemaphoreHandle_t _cbDoneSem = xSemaphoreCreateBinary();
 
 	bool claimCallbacks() {
 		bool claimed = false;
@@ -131,13 +148,17 @@ private:
 
 	static void readyStateChangeCB(void* optParm, AsyncHTTPRequest* req, int readyState) {
 		if (optParm) {
+			DEBUG_LOG_CB("readyStateChangeCB %p state:%d task:%s", (void*)optParm, readyState, pcTaskGetName(NULL));
 			static_cast<AsyncHttpRequest*>(optParm)->handleReadyState(readyState);
+			DEBUG_LOG_CB("readyStateChangeCB out");
 		}
 	}
 
 	static void dataCB(void* optParm, AsyncHTTPRequest* req, size_t availableBytes) {
 		if (optParm) {
+			DEBUG_LOG_CB("dataCB %p avail:%d task:%s", (void*)optParm, (int)availableBytes, pcTaskGetName(NULL));
 			static_cast<AsyncHttpRequest*>(optParm)->handleData();
+			DEBUG_LOG_CB("dataCB out");
 		}
 	}
 
@@ -165,6 +186,7 @@ private:
 	}
 
 	void handleReadyState(int readyState) {
+		Serial.println("[CB] handleReadyState ENTER");
 		if (readyState == readyStateHdrsRecvd || readyState == 3) {
 			handleData();
 		}
@@ -182,9 +204,9 @@ private:
 
 			handleData();
 
-			// We are natively in the AsyncTCP thread, so closing the file here is perfectly safe
-			closeDestFile();
+			 closeDestFile();
 			_isFinished = true;
+			_request.abort();
 
 			// If the watchdog DID NOT fire, we must fire callbacks now
 			if (claimCallbacks()) {
@@ -195,9 +217,11 @@ private:
 
 			// Regardless of how we finished, trigger safe deletion now
 			if (claimDelete()) {
-				xTaskCreate(deferredDeleteTask, "delTask", 2048, this, 1, NULL);
+			//	_request.abort();
+				xTaskCreate(deferredDeleteTask, "delTask", DEL_TASK_STACK_SIZE, this, 1, NULL);
 			}
 		}
+		Serial.println("[CB] handleReadyState EXIT");
 	}
 
 	// --- Lifecycle Tasks ---
@@ -205,29 +229,91 @@ private:
 	static void deferredCallbackTask(void* param) {
 		AsyncHttpRequest* req = static_cast<AsyncHttpRequest*>(param);
 
+#if DEBUG_HTTP_REQUESTS
+		if (!req->_hasError) {
+			size_t contentSize = req->_streamToFile ? 0 : (req->_content ? req->_content->length() : 0);
+			if (contentSize > 0 && contentSize <= 200) {
+				String content = req->_content->c_str();
+				content.trim();
+				Serial.printf("[HTTP_RES] %p SUCCESS (%d bytes): %s\n", (void*)req, contentSize, content.c_str());
+			} else {
+				Serial.printf("[HTTP_RES] %p SUCCESS (%d bytes)\n", (void*)req, contentSize);
+			}
+		} else {
+			Serial.printf("[HTTP_RES] %p ERROR: %s\n", (void*)req, req->_errorMsg.c_str());
+		}
+#endif
+
 		if (!req->_hasError) {
 			if (req->_onSuccess) req->_onSuccess(req->_streamToFile ? nullptr : req->_content, req);
 		} else {
 			if (req->_onFailure) req->_onFailure(req->_errorMsg.isEmpty() ? "HTTP request failed" : req->_errorMsg, req);
 		}
 
-		req->_callbacksRunning = false; // Unblock deletion task
+		// Clear callback std::function to destroy captures inside cbTask's 8KB stack
+		req->_onSuccess = nullptr;
+		req->_onFailure = nullptr;
+
+#if DEBUG_ASYNC_HTTP_MEMORY
+		UBaseType_t cbWatermark = uxTaskGetStackHighWaterMark(NULL);
+		Serial.printf("[cbTask] Finished callbacks. HighWaterMark: %u bytes remaining (Peak stack used: %u / 8192 bytes)\n",
+			(unsigned int)cbWatermark, (unsigned int)(8192 - cbWatermark));
+#endif
+
+		req->_callbacksRunning = false;
+		if (req->_cbDoneSem) {
+			xSemaphoreGive(req->_cbDoneSem);
+		}
 		vTaskDelete(NULL);
 	}
 
 	static void deferredDeleteTask(void* param) {
 		AsyncHttpRequest* req = static_cast<AsyncHttpRequest*>(param);
+		Serial.printf("[delTask] ENTER for %p\n", (void*)req);
 
-		// 1. Wait until user callbacks are completely finished to avoid deleting memory they are using
-		while (req->_callbacksRunning) {
-			vTaskDelay(pdMS_TO_TICKS(10));
+#if DEBUG_ASYNC_HTTP_MEMORY
+		UBaseType_t startWatermark = uxTaskGetStackHighWaterMark(NULL);
+		Serial.printf("[delTask] Started. Allocated stack: %u bytes. HighWaterMark: %u bytes remaining. sizeof(AsyncHttpRequest): %u bytes. Free heap: %u bytes\n",
+			(unsigned int)DEL_TASK_STACK_SIZE,
+			(unsigned int)startWatermark,
+			(unsigned int)sizeof(AsyncHttpRequest),
+			(unsigned int)esp_get_free_heap_size());
+#endif
+
+		// 1. Wait until user callbacks are completely finished via semaphore
+		if (req->_callbacksClaimed && req->_cbDoneSem) {
+			xSemaphoreTake(req->_cbDoneSem, pdMS_TO_TICKS(15000));
+		} else {
+			while (req->_callbacksRunning) {
+				vTaskDelay(pdMS_TO_TICKS(10));
+			}
 		}
 
-		// 2. Wait a tiny bit (50ms) to ensure AsyncTCP has completely returned
-		//    from its readyStateChangeCB internal call tree.
-		vTaskDelay(pdMS_TO_TICKS(50));
+		// 2. Wait to ensure cbTask has completely exited vTaskDelete(NULL) and AsyncTCP has returned
+		vTaskDelay(pdMS_TO_TICKS(100));
 
+#if DEBUG_ASYNC_HTTP_MEMORY
+		UBaseType_t beforeDelWatermark = uxTaskGetStackHighWaterMark(NULL);
+		Serial.printf("[delTask] About to delete req. HighWaterMark before delete: %u bytes remaining (Peak stack used so far: %u / %u bytes)\n",
+			(unsigned int)beforeDelWatermark,
+			(unsigned int)(DEL_TASK_STACK_SIZE - beforeDelWatermark),
+			(unsigned int)DEL_TASK_STACK_SIZE);
+#endif
+
+		Serial.printf("[delTask] About to delete %p\n", (void*)req);
 		delete req;
+		Serial.printf("[delTask] After delete %p\n", (void*)req);
+
+#if DEBUG_ASYNC_HTTP_MEMORY
+		UBaseType_t afterDelWatermark = uxTaskGetStackHighWaterMark(NULL);
+		Serial.printf("[delTask] Finished delete req. HighWaterMark: %u bytes remaining (Peak stack used: %u / %u bytes). Free heap: %u bytes\n",
+			(unsigned int)afterDelWatermark,
+			(unsigned int)(DEL_TASK_STACK_SIZE - afterDelWatermark),
+			(unsigned int)DEL_TASK_STACK_SIZE,
+			(unsigned int)esp_get_free_heap_size());
+#endif
+
+		Serial.printf("[delTask] EXIT\n");
 		vTaskDelete(NULL);
 	}
 
@@ -239,7 +325,8 @@ private:
 			if (xTaskCreate(deferredCallbackTask, "cbTask", 8192, this, 1, NULL) != pdPASS) _callbacksRunning = false;
 		}
 		if (claimDelete()) {
-			xTaskCreate(deferredDeleteTask, "delTask", 2048, this, 1, NULL);
+		//	_request.abort();
+			xTaskCreate(deferredDeleteTask, "delTask", DEL_TASK_STACK_SIZE, this, 1, NULL);
 		}
 	}
 
@@ -252,6 +339,10 @@ public:
 		_url = url;
 		_content = new StreamString();
 		_content->reserve(4096);
+#if DEBUG_HTTP_REQUESTS
+		Serial.printf("[HTTP_REQ] %p GET %s\n", (void*)this, _url.c_str());
+#endif
+		DEBUG_LOG_LIFECYCLE("CTOR %p task:%s URL: %s", (void*)this, pcTaskGetName(NULL), _url.c_str());
 	}
 
 	AsyncHttpRequest(const String &url, const String &postBody,
@@ -262,6 +353,9 @@ public:
 		_url = url;
 		_content = new StreamString();
 		_content->reserve(4096);
+#if DEBUG_HTTP_REQUESTS
+		Serial.printf("[HTTP_REQ] %p POST %s (body: %d bytes)\n", (void*)this, _url.c_str(), _postBody.length());
+#endif
 	}
 
 	AsyncHttpRequest(const String &url, File destFile,
@@ -270,6 +364,9 @@ public:
 	: _destFile(destFile), _onSuccess(onSuccess), _onFailure(onFailure), _streamToFile(true), _timeout(timeout0) {
 		_method = "GET";
 		_url = url;
+#if DEBUG_HTTP_REQUESTS
+		Serial.printf("[HTTP_REQ] %p GET %s (to file)\n", (void*)this, _url.c_str());
+#endif
 	}
 
 	AsyncHttpRequest(const String &method, const String &url, const String &body,
@@ -279,13 +376,32 @@ public:
 	: _method(method), _url(url), _postBody(body), _headers(headers), _onSuccess(onSuccess), _onFailure(onFailure), _timeout(timeout0) {
 		_content = new StreamString();
 		_content->reserve(4096);
+#if DEBUG_HTTP_REQUESTS
+		Serial.printf("[HTTP_REQ] %p %s %s (body: %d bytes, headers: %d)\n", (void*)this, _method.c_str(), _url.c_str(), _postBody.length(), _headers.size());
+#endif
 	}
 
 	~AsyncHttpRequest() {
+		DEBUG_LOG_LIFECYCLE("DTOR %p task:%s", (void*)this, pcTaskGetName(NULL));
+#if DEBUG_ASYNC_HTTP_MEMORY
+		UBaseType_t dtorWatermark = uxTaskGetStackHighWaterMark(NULL);
+		Serial.printf("[~AsyncHttpRequest] Destructor in task '%s'. Stack remaining: %u bytes. Free heap: %u bytes\n",
+			pcTaskGetName(NULL),
+			(unsigned int)dtorWatermark,
+			(unsigned int)esp_get_free_heap_size());
+#endif
 #if DIY_TIMEOUT
 		stopTimeoutTimer();
 #endif
-		if (_content) delete _content;
+		//_request.abort();
+		if (_content) {
+			delete _content;
+			_content = nullptr;
+		}
+		if (_cbDoneSem) {
+			vSemaphoreDelete(_cbDoneSem);
+			_cbDoneSem = nullptr;
+		}
 	}
 
 	String getUrl() { return _url; }
@@ -295,7 +411,7 @@ public:
 		_request.onReadyStateChange(readyStateChangeCB, this);
 		_request.onData(dataCB, this);
 
-		Serial.println(String()+"AsyncHttpRequest::begin _method:"+_method);
+	//	Serial.println(String()+"AsyncHttpRequest::begin _method:"+_method);
 
 		if (!_request.open(_method.c_str(), _url.c_str())) {
 			abortAndCleanup("Failed to open connection");
@@ -323,7 +439,7 @@ public:
 		if (_postBody.length() > 0) sent = _request.send((const uint8_t*)_postBody.c_str(),_postBody.length());
 		else sent = _request.send();
 
-		Serial.println(String()+"AsyncHttpRequest::begin sent:"+sent+" _postBody:"+_postBody);
+//		Serial.println(String()+"AsyncHttpRequest::begin sent:"+sent+" _postBody:"+_postBody);
 
 		if (!sent) {
 #if DIY_TIMEOUT

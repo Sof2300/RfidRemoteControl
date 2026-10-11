@@ -2,7 +2,8 @@
 #define RFIDDB_H
 
 #include "RemoteSyncFile.h"
-#include "Ticker.h"
+//#include "Ticker.h"
+#include <vector>
 
 #include "Definitions.h"
 
@@ -11,7 +12,7 @@ extern SimpleFSEsp32 SIMPLEFS;
 
 struct StructuredTag {
 	String tag, id, command;
-	enum TagType {EMPTY,ID,COMMAND,ULTRACOMMAND,ERASE} type;
+	enum TagType {EMPTY,ID,COMMAND,ULTRACOMMAND,ERASE,UNDO,RFID_UNDO} type;
 
 	StructuredTag(): type(EMPTY) {}
 	StructuredTag(String tag0, String id0): tag(tag0), id(id0), type(EMPTY) {
@@ -24,6 +25,12 @@ struct StructuredTag {
 		} else if(id0==ERASE_COMMAND_KEYWORD){
 			Serial.println(String()+"Found ERASE tag :"+id);
 			type=ERASE;
+		} else if(id0=="meta:undo"){
+			Serial.println(String()+"Found UNDO tag :"+id);
+			type=UNDO;
+		} else if(id0==RFID_UNDO_COMMAND_KEYWORD){
+			Serial.println(String()+"Found RFID_UNDO tag :"+id);
+			type=RFID_UNDO;
 		} else if(id0.indexOf(COMMAND_KEYWORD)>-1) { // command tag
 			command = id0;
 			command.replace(String()+COMMANDDOT_KEYWORD,"");
@@ -37,7 +44,7 @@ struct StructuredTag {
 
 class RfidDB : public RemoteSyncFile {
 
-	Ticker ticker;
+	//Ticker ticker;
 	bool busy=false,synced=false, error=false;
 	long syncts=0;
 
@@ -50,6 +57,18 @@ class RfidDB : public RemoteSyncFile {
 	String lastFoundValue = "";
 	size_t lastFoundStart = 0;
 	size_t lastFoundEnd = 0;
+
+	// --- UNDO MECHANISM ---
+	struct UndoOperation {
+		enum OperationType {SET, ERASE} type;
+		String tag;
+		String oldId;
+		String newId;
+		size_t startPos;
+		size_t endPos;
+	};
+	std::vector<UndoOperation> undoStack;
+	static const int MAX_UNDO_OPERATIONS = 10;
 
 
 protected:
@@ -111,12 +130,36 @@ public:
 		if (foundId.length() > 0) {
 			// Exists but different ID -> Modifying
 			Serial.println("RfidDB: Tag exists. Modifying record.");
+
+			// Record undo operation before making changes
+			UndoOperation op;
+			op.type = UndoOperation::SET;
+			op.tag = tag;
+			op.oldId = foundId;
+			op.newId = id;
+			op.startPos = lastFoundStart;
+			op.endPos = lastFoundEnd;
+			pushUndoOperation(op);
+
 			patchInProgress=true;
 			submitModification(lastFoundStart, lastFoundEnd, line);
 		} else {
 			// Not found at all -> Appending
 			Serial.println("RfidDB: Tag not found. Appending record.");
 			size_t pos = getLocalSize();
+
+			// Record undo operation for append
+			UndoOperation op;
+			op.type = UndoOperation::SET;
+			op.tag = tag;
+			op.oldId = "";
+			op.newId = id;
+			op.startPos = pos;
+			op.endPos = pos + line.length();
+			pushUndoOperation(op);
+			Serial.printf("RfidDB: Recorded undo for append tag '%s' -> '%s' (range [%u..%u], len: %u)\n",
+					tag.c_str(), id.c_str(), (unsigned)op.startPos, (unsigned)op.endPos, (unsigned)line.length());
+
 			patchInProgress=true;
 			submitModification(pos, pos, line);
 		}
@@ -134,6 +177,17 @@ public:
 			Serial.println("RfidDB: tag not found");
 			return false;
 		}
+
+		// Record undo operation before erasing
+		UndoOperation op;
+		op.type = UndoOperation::ERASE;
+		op.tag = tag;
+		op.oldId = id;
+		op.newId = "";
+		op.startPos = lastFoundStart;
+		op.endPos = lastFoundEnd;
+		pushUndoOperation(op);
+
 		patchInProgress=true;
 		submitModification(
 				lastFoundStart,
@@ -169,6 +223,91 @@ public:
 		return getKeyByValue(id).length() > 0;
 
 		/////////////////////////////////////////////////////
+	}
+
+	// --- UNDO MECHANISM FUNCTIONS ---
+	void pushUndoOperation(UndoOperation op) {
+		if (undoStack.size() >= MAX_UNDO_OPERATIONS) {
+			undoStack.erase(undoStack.begin()); // Remove oldest operation
+		}
+		undoStack.push_back(op);
+		Serial.println(String()+"RfidDB: Undo operation pushed. Stack size: "+undoStack.size());
+	}
+
+	bool canUndo() {
+		return !undoStack.empty();
+	}
+
+	String getLastUndoDescription() {
+		if (!canUndo()) {
+			return "no operation to undo";
+		}
+
+		UndoOperation op = undoStack.back();
+		if (op.type == UndoOperation::SET) {
+			if (op.oldId.length() > 0) {
+				// It was a modification
+				return String() + "setting tag " + op.tag + " to " + op.newId;
+			} else {
+				// It was an append
+				return String() + "adding tag " + op.tag + " as " + op.newId;
+			}
+		} else if (op.type == UndoOperation::ERASE) {
+			return String() + "erasing tag " + op.tag + " (was " + op.oldId + ")";
+		}
+		return "unknown operation";
+	}
+
+	bool performUndo() {
+		if (!canUndo()) {
+			Serial.println("RfidDB: No undo operations available");
+			return false;
+		}
+
+		UndoOperation op = undoStack.back();
+		undoStack.pop_back();
+		Serial.printf("RfidDB: Performing undo operation type: %d (tag: '%s', oldId: '%s', newId: '%s', stored range: [%u..%u])\n",
+				(int)op.type, op.tag.c_str(), op.oldId.c_str(), op.newId.c_str(), (unsigned)op.startPos, (unsigned)op.endPos);
+
+		if (op.type == UndoOperation::SET) {
+			// Invalidate cache and dynamically find tag in CSV to get exact current start and end positions
+			lastFoundKey = "";
+			String currentId = findInCSV(op.tag);
+			size_t start = (currentId.length() > 0) ? lastFoundStart : op.startPos;
+			size_t end = (currentId.length() > 0) ? lastFoundEnd : op.endPos;
+
+			if (currentId.length() > 0) {
+				Serial.printf("RfidDB: Undo SET, located tag '%s' in CSV at [%u..%u] (current ID: '%s')\n",
+						op.tag.c_str(), (unsigned)start, (unsigned)end, currentId.c_str());
+			} else {
+				Serial.printf("RfidDB: Undo SET, tag '%s' not found in CSV! Using stored range [%u..%u]\n",
+						op.tag.c_str(), (unsigned)start, (unsigned)end);
+			}
+
+			if (op.oldId.length() > 0) {
+				// It was a modification, revert to old ID
+				String line = op.tag + "," + op.oldId + "\n";
+				patchInProgress = true;
+				Serial.printf("RfidDB: Undo SET, reverting %s to %s at [%u..%u]\n",
+						op.tag.c_str(), op.oldId.c_str(), (unsigned)start, (unsigned)end);
+				submitModification(start, end, line);
+			} else {
+				// It was an append, remove the line
+				patchInProgress = true;
+				Serial.printf("RfidDB: Undo SET, removing appended %s at [%u..%u]\n",
+						op.tag.c_str(), (unsigned)start, (unsigned)end);
+				submitModification(start, end, "");
+			}
+		} else if (op.type == UndoOperation::ERASE) {
+			// Restore the erased entry
+			String line = op.tag + "," + op.oldId + "\n";
+			patchInProgress = true;
+			Serial.printf("RfidDB: Undo ERASE, restoring %s with %s at [%u..%u]\n",
+					op.tag.c_str(), op.oldId.c_str(), (unsigned)op.startPos, (unsigned)op.endPos);
+			submitModification(op.startPos, op.endPos, line);
+		}
+
+		return true;
 	}
 
 	// --- 2. THE CSV BLOCK READER (RAM SAFE) ---

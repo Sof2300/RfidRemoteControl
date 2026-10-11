@@ -2,275 +2,521 @@
 #define RGBLED_H
 
 #include <Arduino.h>
+#include <vector>
 
-#define MAX_QUEUE 24 // Increased to handle multi-step commands
+#define MAX_QUEUE 24
 
-enum LedMode { MODE_IDLE, MODE_FADING, MODE_BLINKING };
+// Sequence interrupt policy options:
+#define SEQ_INTERRUPT_IMMEDIATE 0 // Interrupt sequence immediately on the fly (smoothly fades from current intermediate color)
+#define SEQ_INTERRUPT_STEP      1 // Finish current color transition + pause before starting queued order
+#define SEQ_INTERRUPT_CYCLE     2 // Finish entire sequence cycle (all colors) before starting queued order
+
+// Default interrupt mode (can be overridden before including or in Definitions.h)
+#ifndef SEQ_INTERRUPT_MODE
+#define SEQ_INTERRUPT_MODE SEQ_INTERRUPT_CYCLE
+#endif
+
+enum SeqInterruptMode {
+    SEQ_MODE_IMMEDIATE = SEQ_INTERRUPT_IMMEDIATE,
+    SEQ_MODE_STEP      = SEQ_INTERRUPT_STEP,
+    SEQ_MODE_CYCLE     = SEQ_INTERRUPT_CYCLE
+};
+
+enum LedMode { MODE_IDLE, MODE_FADING, MODE_BLINKING, MODE_SEQUENCE };
 enum BlinkPhase { PHASE_ENTRANCE, PHASE_TO_A, PHASE_TO_B };
 
 struct LedOrder {
-	bool isBlink;
-	bool isTemp;    // Is this a temporary interruption?
-	bool isReturn;  // Is this the command to return to normal?
-	uint8_t r1, g1, b1;
-	uint8_t r2, g2, b2;
-	unsigned long duration;
-	unsigned long entranceDuration; // Special duration used when smoothly returning to a pulse
+    bool isBlink;
+    bool isTemp;
+    bool isReturn;
+    uint8_t r1, g1, b1;
+    uint8_t r2, g2, b2;
+    unsigned long duration;
+    unsigned long entranceDuration;
+};
+
+// Pure color representation (decoupled from timing)
+struct RGBColor {
+    uint8_t r, g, b;
+};
+
+// Backward compatibility alias & wrapper
+using RGB = RGBColor;
+struct ColorStep {
+    uint8_t r, g, b;
+    unsigned long holdDuration;
+    ColorStep(uint8_t r0 = 0, uint8_t g0 = 0, uint8_t b0 = 0, unsigned long hold0 = 0)
+        : r(r0), g(g0), b(b0), holdDuration(hold0) {}
+    operator RGBColor() const { return {r, g, b}; }
+};
+
+// Pure color palettes (timing is configured when playing, not baked into data)
+static const std::vector<RGBColor> RAINBOW_PALETTE = {
+    {255, 0, 0},       // Red (0°)
+    {255, 127, 0},     // Orange (30°)
+    {255, 255, 0},     // Yellow (60°)
+    {0, 255, 0},       // Green (120°)
+    {0, 0, 255},       // Blue (240°)
+    {148, 0, 255},     // Violet (275°)
+    {255, 0, 255}      // Magenta (300°)
+};
+
+static const std::vector<RGBColor> MAGENTA_RAINBOW_PALETTE = {
+    {255, 0, 255},     // Magenta (300°)
+    {255, 0, 0},       // Red (0°)
+    {255, 127, 0},     // Orange (30°)
+    {255, 255, 0},     // Yellow (60°)
+    {0, 255, 0},       // Green (120°)
+    {0, 0, 255}        // Blue (240°)
+};
+
+#define RAINBOW_STEPS RAINBOW_PALETTE
+#define MAGENTA_RAINBOW_STEPS MAGENTA_RAINBOW_PALETTE
+
+struct SequenceData {
+    std::vector<RGBColor> colors;
+    unsigned long transitionDuration;
+    unsigned long pauseDuration;
+    bool loop;
+    bool temp;
+    bool inEntrance;
+    uint8_t entranceStartR, entranceStartG, entranceStartB;
+    size_t currentStep;
+    size_t stepsCompleted;
+    unsigned long stepStartTime;
+    bool isPausing;
+    unsigned long pauseStartTime;
 };
 
 class RGBLed {
 private:
-	uint8_t pinR, pinG, pinB;
-	uint8_t curR, curG, curB;
-	uint8_t startR, startG, startB;
+    uint8_t pinR, pinG, pinB;
+    uint8_t curR = 0, curG = 0, curB = 0;
+    uint8_t startR = 0, startG = 0, startB = 0;
 
-	LedMode currentMode = MODE_IDLE;
-	BlinkPhase bPhase = PHASE_ENTRANCE;
+    LedMode currentMode = MODE_IDLE;
+    BlinkPhase bPhase = PHASE_ENTRANCE;
+    SeqInterruptMode seqInterruptMode = (SeqInterruptMode)SEQ_INTERRUPT_MODE;
 
-	LedOrder activeOrder;
-	LedOrder lastNormalOrder = {false, false, false, 0,0,0, 0,0,0, 0, 0}; // Memory of the background state
+    LedOrder activeOrder;
+    LedOrder lastNormalOrder = {false, false, false, 0, 0, 0, 0, 0, 0, 0, 0};
 
-	unsigned long startTime;
-	LedOrder queue[MAX_QUEUE];
-	int head = 0, tail = 0, count = 0;
+    unsigned long startTime = 0;
+    LedOrder queue[MAX_QUEUE];
+    int head = 0, tail = 0, count = 0;
 
-	// Internal helper to push to queue
-	bool _push(bool blink, bool temp, bool isRet, uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2, unsigned long dur) {
-		if (count >= MAX_QUEUE) return false;
-		queue[head] = {blink, temp, isRet, r1, g1, b1, r2, g2, b2, dur, dur};
-		head = (head + 1) % MAX_QUEUE;
-		count++;
-		return true;
-	}
+    SequenceData currentSequence;
+
+    bool _push(bool blink, bool temp, bool isRet, uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2, unsigned long dur) {
+        if (count >= MAX_QUEUE) return false;
+        queue[head] = {blink, temp, isRet, r1, g1, b1, r2, g2, b2, dur, dur};
+        head = (head + 1) % MAX_QUEUE;
+        count++;
+        return true;
+    }
+
+    static inline uint8_t lerpChannel(uint8_t a, uint8_t b, float t) {
+        return (uint8_t)(a + (int16_t(b - a) * t));
+    }
+
+    void writeInterpolated(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2, float progress) {
+        if (progress < 0.0f) progress = 0.0f;
+        if (progress > 1.0f) progress = 1.0f;
+        writeRGB(
+            lerpChannel(r1, r2, progress),
+            lerpChannel(g1, g2, progress),
+            lerpChannel(b1, b2, progress)
+        );
+    }
+
+    bool shouldExitSequence() {
+        if (!currentSequence.loop && currentSequence.stepsCompleted >= currentSequence.colors.size()) {
+            return true;
+        }
+        if (count > 0) {
+            if (seqInterruptMode == SEQ_MODE_STEP) {
+                return true;
+            }
+            if (seqInterruptMode == SEQ_MODE_CYCLE) {
+                size_t numColors = currentSequence.colors.size();
+                return (currentSequence.stepsCompleted >= numColors) && (currentSequence.stepsCompleted % numColors == 0);
+            }
+        }
+        return false;
+    }
 
 public:
-	RGBLed(uint8_t r, uint8_t g, uint8_t b) : pinR(r), pinG(g), pinB(b) {}
+    RGBLed(uint8_t r, uint8_t g, uint8_t b) : pinR(r), pinG(g), pinB(b) {}
 
-	void begin() {
-		// Serial.println(String()+"RGBLed:: begin:");
-		ledcAttach(pinR, 5000, 8);
-		ledcAttach(pinG, 5000, 8);
-		ledcAttach(pinB, 5000, 8);
-		setDirect(0, 0, 0);
-	}
+    void setSequenceInterruptMode(SeqInterruptMode mode) {
+        seqInterruptMode = mode;
+    }
 
-	// Standard Fade (Remembered as Permanent)
-	bool fadeTo(uint8_t r, uint8_t g, uint8_t b, unsigned long ms) {
-		// Serial.println(String()+"RGBLed:: fadeTo:");
-		return _push(false, false, false, r, g, b, 0, 0, 0, ms);
-	}
+    SeqInterruptMode getSequenceInterruptMode() const {
+        return seqInterruptMode;
+    }
 
-	// Oscillating Pulse (Remembered as Permanent)
-	bool pulse(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2, unsigned long msPerTransition) {
-		// Serial.println(String()+"RGBLed:: pulse:");
-		return _push(true, false, false, r1, g1, b1, r2, g2, b2, msPerTransition);
-	}
+    void begin() {
+        pinMode(pinR, OUTPUT);
+        pinMode(pinG, OUTPUT);
+        pinMode(pinB, OUTPUT);
 
-	/**
-	 * Fades to a color, stays there, then smoothly returns to the PREVIOUS permanent state.
-	 */
-	void tempFade(uint8_t r, uint8_t g, uint8_t b, unsigned long fadeTime, unsigned long holdTime) {
-		// Serial.println(String()+"RGBLed:: tempFade:");
+        ledcAttach(pinR, 5000, 8);
+        ledcAttach(pinG, 5000, 8);
+        ledcAttach(pinB, 5000, 8);
 
-		// 1. Transition IN (Temporary)
-		_push(false, true, false, r, g, b, 0, 0, 0, fadeTime);
-		// 2. HOLD (Temporary)
-		_push(false, true, false, r, g, b, 0, 0, 0, holdTime);
-		// 3. RETURN COMMAND (Tells the queue to restore the last normal state)
-		_push(false, true, true, 0, 0, 0, 0, 0, 0, fadeTime);
-	}
+        setDirect(0, 0, 0);
+    }
 
-	void setDirect(uint8_t r, uint8_t g, uint8_t b) {
-		count = 0; head = 0; tail = 0;
-		currentMode = MODE_IDLE;
-		lastNormalOrder = {false, false, false, r, g, b, 0, 0, 0, 0, 0};
-		writeRGB(r, g, b);
-	}
+    bool fadeTo(uint8_t r, uint8_t g, uint8_t b, unsigned long ms) {
+        return _push(false, false, false, r, g, b, 0, 0, 0, ms);
+    }
 
-	void update() {
-		if ((currentMode == MODE_IDLE && count > 0) || (currentMode == MODE_BLINKING && count > 0)) {
-			startNextOrder();
-		}
-		if (currentMode == MODE_FADING) handleFade();
-		else if (currentMode == MODE_BLINKING) handlePulse();
-	}
+    bool pulse(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2, unsigned long msPerTransition) {
+        return _push(true, false, false, r1, g1, b1, r2, g2, b2, msPerTransition);
+    }
+
+    void tempFade(uint8_t r, uint8_t g, uint8_t b, unsigned long fadeTime, unsigned long holdTime) {
+        _push(false, true, false, r, g, b, 0, 0, 0, fadeTime);
+        _push(false, true, false, r, g, b, 0, 0, 0, holdTime);
+        _push(false, true, true, 0, 0, 0, 0, 0, 0, fadeTime);
+    }
+
+    void tempThenFade(uint8_t tr, uint8_t tg, uint8_t tb, unsigned long fadeTime, unsigned long holdTime, uint8_t br, uint8_t bg, uint8_t bb) {
+        fadeTo(tr, tg, tb, fadeTime);
+        fadeTo(tr, tg, tb, holdTime);
+        fadeTo(br, bg, bb, fadeTime);
+    }
+
+    void tempThenPulse(uint8_t tr, uint8_t tg, uint8_t tb, unsigned long fadeTime, unsigned long holdTime,
+            uint8_t pr1, uint8_t pg1, uint8_t pb1, uint8_t pr2, uint8_t pg2, uint8_t pb2, unsigned long pulseTime) {
+        fadeTo(tr, tg, tb, fadeTime);
+        fadeTo(tr, tg, tb, holdTime);
+        pulse(pr1, pg1, pb1, pr2, pg2, pb2, pulseTime);
+    }
+
+    void setDirect(uint8_t r, uint8_t g, uint8_t b) {
+        count = 0; head = 0; tail = 0;
+        currentMode = MODE_IDLE;
+        currentSequence.colors.clear();
+        lastNormalOrder = {false, false, false, r, g, b, 0, 0, 0, 0, 0};
+        writeRGB(r, g, b);
+    }
+
+    /**
+     * Plays a sequence of colors with flexible transition and pause times.
+     * @param colors Vector of RGBColor values.
+     * @param transitionDuration Milliseconds spent smoothly fading into each color.
+     * @param pauseDuration Milliseconds spent holding each color before fading to the next.
+     * @param loop If true, continuously loops through the palette.
+     * @param temp If true, returns to previous normal state when finished.
+     */
+    void playSequence(const std::vector<RGBColor>& colors, unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        if (colors.empty()) return;
+        currentSequence.colors = colors;
+        currentSequence.transitionDuration = transitionDuration;
+        currentSequence.pauseDuration = pauseDuration;
+        currentSequence.loop = loop;
+        currentSequence.temp = temp;
+
+        // Smooth entrance: smoothly fade from current LED output into colors[0]
+        currentSequence.inEntrance = true;
+        currentSequence.entranceStartR = curR;
+        currentSequence.entranceStartG = curG;
+        currentSequence.entranceStartB = curB;
+
+        currentSequence.currentStep = 0;
+        currentSequence.stepsCompleted = 0;
+        currentSequence.stepStartTime = millis();
+        currentSequence.isPausing = false;
+        currentSequence.pauseStartTime = 0;
+
+        currentMode = MODE_SEQUENCE;
+
+        if (!temp && !colors.empty()) {
+            lastNormalOrder = {false, false, false, colors[0].r, colors[0].g, colors[0].b, 0, 0, 0, transitionDuration, transitionDuration};
+        }
+    }
+
+    // Overload for backward compatibility with std::vector<ColorStep>
+    void playSequence(const std::vector<ColorStep>& steps, unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        std::vector<RGBColor> colors;
+        colors.reserve(steps.size());
+        for (const auto& s : steps) colors.push_back({s.r, s.g, s.b});
+        playSequence(colors, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    /**
+     * Dynamically adjusts the transition and pause speeds of the active sequence on the fly.
+     */
+    void setSequenceSpeed(unsigned long transitionDuration, unsigned long pauseDuration) {
+        currentSequence.transitionDuration = transitionDuration;
+        currentSequence.pauseDuration = pauseDuration;
+    }
+
+    /**
+     * Plays rainbow with customizable transition and pause times.
+     * E.g. playRainbow(200, 100) -> 200ms fade + 100ms pause at each color.
+     */
+    void playRainbow(unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        playSequence(RAINBOW_PALETTE, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    void playMagentaRainbow(unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        playSequence(MAGENTA_RAINBOW_PALETTE, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    void update() {
+        bool canInterrupt = (currentMode == MODE_IDLE || currentMode == MODE_BLINKING);
+        if (seqInterruptMode == SEQ_MODE_IMMEDIATE) {
+            canInterrupt = canInterrupt || (currentMode == MODE_SEQUENCE);
+        }
+        if (count > 0 && canInterrupt) {
+            startNextOrder();
+        }
+
+        if (currentMode == MODE_FADING) handleFade();
+        else if (currentMode == MODE_BLINKING) handlePulse();
+        else if (currentMode == MODE_SEQUENCE) handleSequence();
+    }
 
 private:
-	void startNextOrder() {
-		LedOrder next = queue[tail];
-		tail = (tail + 1) % MAX_QUEUE;
-		count--;
+    void startNextOrder() {
+        LedOrder next = queue[tail];
+        tail = (tail + 1) % MAX_QUEUE;
+        count--;
 
-		// If this is a normal order, commit it to memory
-		if (!next.isTemp) {
-			lastNormalOrder = next;
-		}
+        if (!next.isTemp) lastNormalOrder = next;
 
-		// If this is a return command, load the memory
-		if (next.isReturn) {
-			unsigned long returnFadeTime = next.duration;
-			next = lastNormalOrder;
-			next.entranceDuration = returnFadeTime; // Use the tempFade's transition time for a smooth entry
-		}
+        if (next.isReturn) {
+            unsigned long returnFadeTime = next.duration;
+            next = lastNormalOrder;
+            next.entranceDuration = returnFadeTime;
+        }
 
-		activeOrder = next;
-		startR = curR; startG = curG; startB = curB;
-		startTime = millis();
+        activeOrder = next;
+        startR = curR; startG = curG; startB = curB;
+        startTime = millis();
 
-		if (activeOrder.isBlink) {
-			currentMode = MODE_BLINKING;
-			bPhase = PHASE_ENTRANCE;
-		} else {
-			currentMode = MODE_FADING;
-		}
-	}
+        if (activeOrder.isBlink) {
+            currentMode = MODE_BLINKING;
+            bPhase = PHASE_ENTRANCE;
+        } else {
+            currentMode = MODE_FADING;
+        }
+    }
 
-	void interpolate(uint8_t sR, uint8_t sG, uint8_t sB, uint8_t tR, uint8_t tG, uint8_t tB, unsigned long dur) {
-		unsigned long elapsed = millis() - startTime;
-		float progress = (dur == 0) ? 1.0f : (float)elapsed / (float)dur;
-		if (progress > 1.0f) progress = 1.0f;
-		writeRGB(
-				sR + (int16_t(tR - sR) * progress),
-				sG + (int16_t(tG - sG) * progress),
-				sB + (int16_t(tB - sB) * progress)
-		);
-	}
+    void handleFade() {
+        unsigned long dur = activeOrder.entranceDuration;
+        unsigned long elapsed = millis() - startTime;
+        float progress = (dur == 0) ? 1.0f : (float)elapsed / (float)dur;
+        writeInterpolated(startR, startG, startB, activeOrder.r1, activeOrder.g1, activeOrder.b1, progress);
+        if (elapsed >= dur) {
+            writeRGB(activeOrder.r1, activeOrder.g1, activeOrder.b1);
+            currentMode = MODE_IDLE;
+        }
+    }
 
-	void handleFade() {
-		unsigned long dur = activeOrder.entranceDuration;
-		interpolate(startR, startG, startB, activeOrder.r1, activeOrder.g1, activeOrder.b1, dur);
-		if (millis() - startTime >= dur) {
-			currentMode = MODE_IDLE;
-		}
-	}
+    void handlePulse() {
+        unsigned long dur = (bPhase == PHASE_ENTRANCE) ? activeOrder.entranceDuration : activeOrder.duration;
+        unsigned long elapsed = millis() - startTime;
+        float progress = (dur == 0) ? 1.0f : (float)elapsed / (float)dur;
 
-	void handlePulse() {
-		// Entrance can have a custom duration (for smooth returns), but loops use normal duration
-		unsigned long dur = (bPhase == PHASE_ENTRANCE) ? activeOrder.entranceDuration : activeOrder.duration;
+        switch (bPhase) {
+        case PHASE_ENTRANCE:
+            writeInterpolated(startR, startG, startB, activeOrder.r1, activeOrder.g1, activeOrder.b1, progress);
+            if (elapsed >= dur) {
+                writeRGB(activeOrder.r1, activeOrder.g1, activeOrder.b1);
+                bPhase = PHASE_TO_B;
+                startTime = millis();
+            }
+            break;
+        case PHASE_TO_B:
+            writeInterpolated(activeOrder.r1, activeOrder.g1, activeOrder.b1, activeOrder.r2, activeOrder.g2, activeOrder.b2, progress);
+            if (elapsed >= dur) {
+                writeRGB(activeOrder.r2, activeOrder.g2, activeOrder.b2);
+                bPhase = PHASE_TO_A;
+                startTime = millis();
+            }
+            break;
+        case PHASE_TO_A:
+            writeInterpolated(activeOrder.r2, activeOrder.g2, activeOrder.b2, activeOrder.r1, activeOrder.g1, activeOrder.b1, progress);
+            if (elapsed >= dur) {
+                writeRGB(activeOrder.r1, activeOrder.g1, activeOrder.b1);
+                bPhase = PHASE_TO_B;
+                startTime = millis();
+            }
+            break;
+        }
+    }
 
-		switch (bPhase) {
-		case PHASE_ENTRANCE:
-			interpolate(startR, startG, startB, activeOrder.r1, activeOrder.g1, activeOrder.b1, dur);
-			if (millis() - startTime >= dur) { bPhase = PHASE_TO_B; startTime = millis(); }
-			break;
-		case PHASE_TO_B:
-			interpolate(activeOrder.r1, activeOrder.g1, activeOrder.b1, activeOrder.r2, activeOrder.g2, activeOrder.b2, dur);
-			if (millis() - startTime >= dur) { bPhase = PHASE_TO_A; startTime = millis(); }
-			break;
-		case PHASE_TO_A:
-			interpolate(activeOrder.r2, activeOrder.g2, activeOrder.b2, activeOrder.r1, activeOrder.g1, activeOrder.b1, dur);
-			if (millis() - startTime >= dur) { bPhase = PHASE_TO_B; startTime = millis(); }
-			break;
-		}
-	}
+    void handleSequence() {
+        if (currentSequence.colors.empty()) {
+            currentMode = MODE_IDLE;
+            return;
+        }
 
-	void writeRGB(uint8_t r, uint8_t g, uint8_t b) {
-//		Serial.println(String()+"RGBLed:: writeRGB:"+r+", "+g+","+b);
-		curR = r; curG = g; curB = b;
-		ledcWrite(pinR, r); ledcWrite(pinG, g); ledcWrite(pinB, b);
-	}
+        // --- ENTRANCE PHASE: smoothly transition from previous LED color to color 0 ---
+        if (currentSequence.inEntrance) {
+            unsigned long elapsed = millis() - currentSequence.stepStartTime;
+            const RGBColor& target = currentSequence.colors[0];
+
+            if (elapsed >= currentSequence.transitionDuration) {
+                writeRGB(target.r, target.g, target.b);
+                currentSequence.inEntrance = false;
+                currentSequence.currentStep = 0;
+
+                if (currentSequence.pauseDuration > 0) {
+                    currentSequence.isPausing = true;
+                    currentSequence.pauseStartTime = millis();
+                } else {
+                    currentSequence.isPausing = false;
+                    currentSequence.stepStartTime = millis();
+                }
+            } else {
+                float progress = (currentSequence.transitionDuration == 0) ? 1.0f : (float)elapsed / (float)currentSequence.transitionDuration;
+                writeInterpolated(
+                    currentSequence.entranceStartR, currentSequence.entranceStartG, currentSequence.entranceStartB,
+                    target.r, target.g, target.b,
+                    progress
+                );
+            }
+            return;
+        }
+
+        // --- PAUSE PHASE: hold on the current color ---
+        if (currentSequence.isPausing) {
+            unsigned long pauseElapsed = millis() - currentSequence.pauseStartTime;
+            if (pauseElapsed >= currentSequence.pauseDuration) {
+                if (shouldExitSequence()) {
+                    bool wasTemp = currentSequence.temp;
+                    unsigned long transDur = currentSequence.transitionDuration;
+                    currentSequence.colors.clear();
+                    currentMode = MODE_IDLE;
+                    if (wasTemp && count == 0) {
+                        _push(false, true, true, 0, 0, 0, 0, 0, 0, transDur);
+                    }
+                    return;
+                }
+                currentSequence.isPausing = false;
+                currentSequence.stepStartTime = millis();
+            }
+            return;
+        }
+
+        // --- TRANSITION PHASE: fade from currentStep to nextStep ---
+        size_t numColors = currentSequence.colors.size();
+        size_t nextStep = (currentSequence.currentStep + 1) % numColors;
+        const RGBColor& cur = currentSequence.colors[currentSequence.currentStep];
+        const RGBColor& nxt = currentSequence.colors[nextStep];
+
+        unsigned long elapsed = millis() - currentSequence.stepStartTime;
+        if (elapsed >= currentSequence.transitionDuration) {
+            writeRGB(nxt.r, nxt.g, nxt.b);
+            currentSequence.currentStep = nextStep;
+            currentSequence.stepsCompleted++;
+
+            if (currentSequence.pauseDuration == 0) {
+                if (shouldExitSequence()) {
+                    bool wasTemp = currentSequence.temp;
+                    unsigned long transDur = currentSequence.transitionDuration;
+                    currentSequence.colors.clear();
+                    currentMode = MODE_IDLE;
+                    if (wasTemp && count == 0) {
+                        _push(false, true, true, 0, 0, 0, 0, 0, 0, transDur);
+                    }
+                    return;
+                }
+                currentSequence.stepStartTime = millis();
+            } else {
+                currentSequence.isPausing = true;
+                currentSequence.pauseStartTime = millis();
+            }
+        } else {
+            float progress = (currentSequence.transitionDuration == 0) ? 1.0f : (float)elapsed / (float)currentSequence.transitionDuration;
+            writeInterpolated(cur.r, cur.g, cur.b, nxt.r, nxt.g, nxt.b, progress);
+        }
+    }
+
+    void writeRGB(uint8_t r, uint8_t g, uint8_t b) {
+        curR = r; curG = g; curB = b;
+        // Auto-reattach if a peripheral (such as tone/buzzer) stole or detached the channel
+        if (!ledcWrite(pinR, r)) {
+            ledcAttach(pinR, 5000, 8);
+            ledcWrite(pinR, r);
+        }
+        if (!ledcWrite(pinG, g)) {
+            ledcAttach(pinG, 5000, 8);
+            ledcWrite(pinG, g);
+        }
+        if (!ledcWrite(pinB, b)) {
+            ledcAttach(pinB, 5000, 8);
+            ledcWrite(pinB, b);
+        }
+    }
 
 public:
-	/**
-	 * Fades to a temp color, holds it, then fades to a NEW solid base color.
-	 */
-	void tempThenFade(uint8_t tr, uint8_t tg, uint8_t tb, unsigned long fadeTime, unsigned long holdTime,
-			uint8_t br, uint8_t bg, uint8_t bb) {
-		fadeTo(tr, tg, tb, fadeTime);     // 1. Fade to temp color
-		fadeTo(tr, tg, tb, holdTime);     // 2. Hold temp color
-		fadeTo(br, bg, bb, fadeTime);     // 3. Fade to NEW base color (Overwrites memory!)
-	}
+    void playColor(const String& color) {
+        Serial.println(String() + "RGBLed:: playColor:" + color);
 
-	/**
-	 * Fades to a temp color, holds it, then starts a NEW looping pulse.
-	 */
-	void tempThenPulse(uint8_t tr, uint8_t tg, uint8_t tb, unsigned long fadeTime, unsigned long holdTime,
-			uint8_t pr1, uint8_t pg1, uint8_t pb1, uint8_t pr2, uint8_t pg2, uint8_t pb2, unsigned long pulseTime) {
-		fadeTo(tr, tg, tb, fadeTime);     // 1. Fade to temp color
-		fadeTo(tr, tg, tb, holdTime);     // 2. Hold temp color
-		pulse(pr1, pg1, pb1, pr2, pg2, pb2, pulseTime); // 3. Pulse NEW base (Overwrites memory!)
-	}
+        // Permanent Base States
+        if      (color == "red")                 fadeTo(255, 0, 0, 1000);
+        else if (color == "green")               fadeTo(0, 255, 0, 1000);
+        else if (color == "blue")                fadeTo(0, 0, 255, 1000);
+        else if (color == "yellow")              fadeTo(255, 255, 0, 1000);
+        else if (color == "yellowish")           fadeTo(255, 128, 0, 1000);
+        else if (color == "yellowishblue")       fadeTo(255, 128, 64, 1000);
+        else if (color == "white")               fadeTo(255, 255, 255, 1000);
+        else if (color == "orange")              fadeTo(255, 165, 0, 1000);
+        else if (color == "purple")              fadeTo(255, 0, 255, 1000);
+        else if (color == "magenta")             fadeTo(255, 0, 255, 1000);
+        else if (color == "cyan")                fadeTo(0, 255, 255, 1000);
 
-	void playColor(String color){
- 		Serial.println(String()+"RGBLed:: playColor:"+color);
+        // Permanent Pulse States
+        else if (color == "greenbluepulse")      pulse(0, 255, 255, 0, 255, 0, 500);
+        else if (color == "fastwhitebluepulse")  pulse(255, 255, 255, 0, 255, 0, 100);
+        else if (color == "bluegreen")           pulse(0, 0, 255, 0, 255, 0, 2000);
+        else if (color == "redpulse")            pulse(0, 0, 0, 255, 0, 0, 500);
+        else if (color == "bluered")             pulse(0, 0, 255, 255, 0, 0, 500);
+        else if (color == "fastredpulse")        pulse(0, 0, 0, 255, 0, 0, 200);
+        else if (color == "redbluepulse")        pulse(0, 0, 255, 255, 0, 0, 200);
+        else if (color == "yellowpulse")         pulse(0, 0, 0, 255, 255, 0, 500);
+        else if (color == "fastyellowpulse")     pulse(0, 0, 0, 255, 255, 0, 100);
+        else if (color == "whitepulse")          pulse(0, 0, 0, 255, 255, 255, 500);
+        else if (color == "orangepulse")         pulse(0, 0, 0, 255, 165, 0, 500);
+        else if (color == "purplepulse")         pulse(0, 0, 0, 255, 0, 255, 500);
+        else if (color == "fastpurplepulse")     pulse(0, 0, 0, 255, 0, 255, 100);
+        else if (color == "cyanpulse")           pulse(0, 0, 0, 0, 255, 255, 500);
+        else if (color == "bluishcyanpulse")     pulse(0, 0, 0, 0, 128, 255, 500);
+        else if (color == "fastcyanpulse")       pulse(0, 0, 0, 0, 255, 255, 200);
+        else if (color == "bluepulse")           pulse(0, 0, 0, 0, 0, 255, 200);
 
-		// Permanent Base States
-		if(color=="red") fadeTo(255,0,0,1000);
-		if(color=="green") fadeTo(0,255,0,1000);
-		if(color=="blue") fadeTo(0,0,255,1000);
-		if(color=="yellow") fadeTo(255,255,0,1000);
-		if(color=="yellowish") fadeTo(255,128,0,1000);
-		if(color=="yellowishblue") fadeTo(255,128,64,1000);
-		if(color=="white") fadeTo(255,255,255,1000);
-		if(color=="orange") fadeTo(255,165,0,1000);
-		if(color=="purple") fadeTo(255,0,255,1000);
-		if(color=="cyan") fadeTo(0,255,255,1000);
+        // Temporary Interruptions
+        else if (color == "tempocyan")           tempFade(0, 255, 255, 300, 800);
+        else if (color == "tempoblue")           tempFade(0, 0, 255, 300, 800);
+        else if (color == "tempored")            tempFade(255, 0, 0, 300, 800);
+        else if (color == "tempoyellow")         tempFade(255, 255, 0, 300, 800);
+        else if (color == "tempoyellowish")      tempFade(255, 128, 0, 300, 800);
+        else if (color == "tempowhite")          tempFade(255, 255, 255, 300, 800);
+        else if (color == "tempoorange")         tempFade(255, 165, 0, 300, 800);
+        else if (color == "tempopurple")         tempFade(255, 0, 255, 300, 800);
 
-		// Permanent Pulse States
-		if(color=="greenbluepulse") pulse(0, 255, 255, 0, 255,0, 500);
-		if(color=="fastwhitebluepulse") pulse(255, 255, 255, 0, 255,0, 100);
+        // Temp then state change
+        else if (color == "tempobluethenred")    tempThenFade(0, 0, 255, 200, 1000, 255, 0, 0);
+        else if (color == "tempoyellowthengreen") tempThenFade(255, 255, 0, 200, 1000, 0, 255, 0);
+        else if (color == "tempobluethengreen")  tempThenFade(0, 0, 255, 200, 1000, 0, 255, 0);
+        else if (color == "tempowhitethengreen") tempThenFade(255, 255, 255, 200, 1000, 0, 255, 0);
+        else if (color == "tempobluethenpulse")  tempThenPulse(0, 0, 255, 200, 1000, 255, 0, 0, 255, 255, 255, 500);
 
-		if(color=="bluegreen") pulse(0, 0, 255, 0, 255,0, 2000);
-		if(color=="redpulse") pulse(0, 0, 0, 255, 0, 0, 500);
-		if(color=="bluered") pulse(0, 0, 255, 255, 0,0, 500);
-		if(color=="fastredpulse") pulse(0, 0, 0, 255, 0, 0, 200);
-		if(color=="redbluepulse") pulse(0, 0, 255, 255, 0, 0, 200);
-		if(color=="yellowpulse") pulse(0, 0, 0, 255, 255, 0, 500);
-		if(color=="fastyellowpulse") pulse(0, 0, 0, 255, 255, 0, 100);
-
-		if(color=="whitepulse") pulse(0, 0, 0, 255, 255, 255, 500);
-		if(color=="orangepulse") pulse(0, 0, 0, 255, 165, 0, 500);
-		if(color=="purplepulse") pulse(0, 0, 0, 255, 0, 255, 500);
-		if(color=="fastpurplepulse") pulse(0, 0, 0, 255, 0, 255, 100);
-		if(color=="cyanpulse") pulse(0, 0, 0, 0, 255, 255, 500);
-		if(color=="bluishcyanpulse") pulse(0, 0, 0, 0, 128, 255, 500);
-		if(color=="fastcyanpulse") pulse(0, 0, 0, 0, 255, 255, 200);
-		if(color=="bluepulse") pulse(0, 0, 0, 0, 255, 255, 200);
-
-		// Temporary Interruptions
-		if(color=="tempocyan") tempFade(0, 255, 255, 300, 800);
-		if(color=="tempoblue") tempFade(0, 0, 255, 300, 800);
-		if(color=="tempored") tempFade(255, 0, 0, 300, 800);
-		if(color=="tempoyellow") tempFade(255, 255, 0, 300, 800);
-		if(color=="tempoyellowish") tempFade(255, 128, 0, 300, 800);
-		if(color=="tempowhite") tempFade(255, 255, 255, 300, 800);
-		if(color=="tempoorange") tempFade(255, 165, 0, 300, 800);
-		if(color=="tempopurple") tempFade(255, 0, 255, 300, 800);
-
-		if(color=="tempobluethenred") tempThenFade(0, 0, 255, 200, 1000, 255, 0, 0);// Temp Blue (200ms fade, 1000ms hold) -> Becomes permanent Red
-		if(color=="tempoyellowthengreen") tempThenFade(255, 255, 0, 200, 1000, 0, 255, 0);
-		if(color=="tempobluethengreen") tempThenFade(0, 0, 255, 200, 1000, 0, 255, 0);
-		if(color=="tempowhitethengreen") tempThenFade(0, 0, 255, 200, 1000, 0, 255, 0);
-
-		if(color=="tempobluethenpulse") tempThenPulse(0, 0, 255, 200, 1000, 255, 0, 0, 255, 255, 255, 500);// Temp Blue (200ms fade, 1000ms hold) -> Becomes Red/White pulse
-
-	}
+        // Sequences (transitionDuration, pauseDuration)
+        else if (color == "rainbow")             playRainbow(400, 200, true, false); // 200ms fade + 100ms pause at each color
+        else if (color == "fastrainbow")         playRainbow(160, 80, true, false);   // 80ms fade + 40ms pause
+        else if (color == "superfastrainbow")         playRainbow(160, 30, true, false);   // 80ms fade + 40ms pause
+        else if (color == "slowrainbow")         playRainbow(800, 400, true, false); // 400ms fade + 200ms pause
+        else if (color == "rainbowtemp")         playRainbow(200, 100, true, true);
+        else if (color == "magentapulse")        playMagentaRainbow(200, 100, true, false);
+        else if (color == "fastmagentapulse")    playMagentaRainbow(80, 40, true, false);
+    }
 };
-
-
-// --- USAGE ---
-/*
-RGBLed myLED(27, 14, 12);
-
-void setup() {
-  myLED.begin();
-
-  // 1. Start with a dim green ambient light
-  myLED.fadeTo(0, 50, 0, 1000);
-
-  // 2. Perform a "Flash" notification (White)
-  // It will:
-  // - Fade Green -> White (200ms)
-  // - Stay White (1000ms)
-  // - Fade White -> Green (200ms)
-  myLED.tempFade(255, 255, 255, 200, 1000);
-
-  // 3. Queue a pulse afterwards just to show succession works
-  myLED.pulse(0, 0, 255, 0, 0, 50, 2000);
-}
-
-void loop() {
-  myLED.update();
-}*/
 
 #endif

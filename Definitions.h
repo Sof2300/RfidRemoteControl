@@ -3,6 +3,10 @@
 
 #include <Arduino.h>
 
+
+#define APP_NAME "Tzizika Rfid Remote Control"
+
+
 //////////////////////////////////////////
 
 #define SUPERSCALE_URL_FIELD "superscaleurl"
@@ -10,6 +14,8 @@
 #define COMMANDDOT_KEYWORD "command:"
 #define ULTCOMMAND_KEYWORD "meta:command"
 #define ERASE_COMMAND_KEYWORD "meta:erase"
+#define UNDO_COMMAND_KEYWORD "meta:undo"
+#define RFID_UNDO_COMMAND_KEYWORD "meta:rfid-undo"
 #define SSID_KEY "ssid"
 #define PASSWORD_KEY "password"
 
@@ -32,6 +38,8 @@
 #define EVENT_RFID_COMMAND "RFID_COMMAND"
 #define EVENT_RFID_ATTACHCOMMAND "RFID_ATTACHCOMMAND"
 #define EVENT_RFID_ERASE "RFID_ERASE"
+#define EVENT_RFID_UNDO "RFID_UNDO"
+#define EVENT_RFID_RFIDUNDO "RFID_RFIDUNDO"
 
 #define EVENT_SET_SUCCESS "SET_SUCCESS"
 #define EVENT_SET_FAIL "SET_FAIL"
@@ -44,6 +52,10 @@
 #define EVENT_SET_COMMAND_FAIL "SET_COMMAND_FAIL"
 #define EVENT_GET_COMMAND_SUCCESS "GET_COMMAND_SUCCESS"
 #define EVENT_GET_COMMAND_FAIL "GET_COMMAND_FAIL"
+#define EVENT_UNDO_SUCCESS "UNDO_SUCCESS"
+#define EVENT_UNDO_FAIL "UNDO_FAIL"
+#define EVENT_RFIDUNDO_SUCCESS "RFIDUNDO_SUCCESS"
+#define EVENT_RFIDUNDO_FAIL "RFIDUNDO_FAIL"
 
 #define EVENT_PATCH_INPROGRESS "PATCH_INPROGRESS"
 #define EVENT_PATCH_ERROR "PATCH_ERROR"
@@ -78,8 +90,21 @@
 #define LED_ERASE_BLINKFASTCOLOR "fastcyanpulse"
 #define LED_ERASE_COLOR "cyan"
 
+#define LED_UNDO_BLINKCOLOR "rainbow"
+#define LED_UNDO_BLINKFASTCOLOR "fastrainbow"
+#define LED_UNDO_COLOR "slowrainbow"
+
+#define LED_RFIDUNDO_BLINKCOLOR "magentapulse"
+#define LED_RFIDUNDO_BLINKFASTCOLOR "fastmagentapulse"
+#define LED_RFIDUNDO_COLOR "magenta"
+
+#define LED_CONFIGMODE_COLOR "superfastrainbow"
+
 #define BUZZER_BOOT "on"
 
+
 void dispatchEventSM(String eventname);
+
+
 
 #endif

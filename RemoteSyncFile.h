@@ -32,6 +32,8 @@ protected:
 	String syncFilename;
 	size_t lastSyncedSize = 0;
 
+	Ticker delayedtask;
+
 	// Virtual function called when the file is updated (Full or Delta)
 	virtual void onFileUpdated() = 0;
 
@@ -66,7 +68,7 @@ protected:
 		}
 	}
 protected:
-//	virtual bool checkDeltaConflict(const String& serverDelta, const String& clientDelta)=0;
+	//	virtual bool checkDeltaConflict(const String& serverDelta, const String& clientDelta)=0;
 public:
 	// UI Callbacks
 	std::function<void()> onUpdateSuccess;
@@ -114,8 +116,8 @@ public:
 				(unsigned)currentSize, (unsigned)lastSyncedSize, (unsigned)checkSize, crc.c_str());
 
 		String reqUrl = syncUrl + "sync_check?size=" + String(checkSize)
-															+ "&crc=" + crc
-															+ "&total_size=" + String(currentSize);
+																	+ "&crc=" + crc
+																	+ "&total_size=" + String(currentSize);
 
 		SYNC_LOG2("[SYNC] GET -> %s\n", reqUrl.c_str());
 
@@ -142,7 +144,10 @@ public:
 			else if (response == "FULL_UPDATE") {
 				SYNC_LOG1("[SYNC] -> FULL_UPDATE dispatched (base CRC mismatch; server wins)\n");
 				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->downloadFull) ====\n");
-				downloadFull();
+				//downloadFull();
+				delayedtask.once_ms(3, [this]() {
+					downloadFull();
+				});
 			}
 			else if (response.startsWith("PULL_DELTA:")) {
 				String tail = response.substring(strlen("PULL_DELTA:"));
@@ -152,7 +157,9 @@ public:
 					SYNC_LOG1("[SYNC] -> PULL_DELTA has bad serverTotalSize=%ld checkSize=%u -> fallback FULL_UPDATE\n",
 							sts, (unsigned)checkSize);
 					SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->downloadFull fallback) ====\n");
-					downloadFull();
+					delayedtask.once_ms(3, [this]() {
+						downloadFull();
+					});
 				} else {
 					size_t serverTotalSize = (size_t)sts;
 					bool bothSidesAppended = (currentSize > checkSize);
@@ -160,7 +167,10 @@ public:
 							(unsigned)checkSize, (unsigned)serverTotalSize, (unsigned)currentSize,
 							bothSidesAppended ? "YES(client+server both appended)" : "NO(server-only append)");
 					SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->performMerge) ====\n");
-					performMerge(checkSize, serverTotalSize, currentSize);
+					delayedtask.once_ms(3, [this, checkSize, serverTotalSize, currentSize]() {
+						performMerge(checkSize, serverTotalSize, currentSize);
+					});
+
 				}
 			}
 			else if (response == "PUSH_DELTA") {
@@ -168,6 +178,9 @@ public:
 						currentSize > lastSyncedSize ? (unsigned)(currentSize - lastSyncedSize) : 0u);
 				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->pushClientDelta) ====\n");
 				pushClientDelta();
+				delayedtask.once_ms(3, [this]() {
+					pushClientDelta();
+				});
 			}
 			else {
 				SYNC_LOG1("[SYNC] -> unrecognized response -> onUpdateError\n");
@@ -397,24 +410,34 @@ protected:
 
 		// Generate headers using the helper function
 		auto headers = buildPatchHeaders(currentCrc, start, end, currentSize, content.length());
-		SYNC_LOG1("[SYNC] submitModification PATCH - url:\n",reqUrl);
+		SYNC_LOG1("[SYNC] submitModification PATCH -> url: %s (range: %u-%u/%u, contentLen: %u, CRC: %s)\n",
+				reqUrl.c_str(), (unsigned)start, (unsigned)end, (unsigned)currentSize, (unsigned)content.length(), currentCrc.c_str());
 
 		SYNC_LOG2("[SYNC] submitModification PATCH -> %s (If-Match: %s, Range: %u-%u/%u)\n",
 				reqUrl.c_str(), currentCrc.c_str(), (unsigned)start, (unsigned)end, (unsigned)currentSize);
 
 		AsyncHttpRequest::request("PATCH", reqUrl, content, headers,
 				[this, start, end, content](const StreamString *response, AsyncHttpRequest *req) {
-			SYNC_LOG1("[SYNC] Server accepted PATCH. Applying locally...\n");
+			Serial.println("[SYNC] PATCH callback ENTER");
+			SYNC_LOG1("[SYNC] Server accepted PATCH. Applying locally (range: %u-%u, contentLen: %u)...\n",
+					(unsigned)start, (unsigned)end, (unsigned)content.length());
 			String oldCrc=getFileCRC(syncFilename);
+			Serial.println("[SYNC] Before spliceFileInPlace");
 			bool success = spliceFileInPlace(syncFilename, start, end, content);
+			Serial.println("[SYNC] After spliceFileInPlace");
 			if (success) {
 				lastSyncedSize=SIMPLEFS.fileSize(syncFilename.c_str());
+				SYNC_LOG1("[SYNC] Local splice OK. New file size: %u, CRC: %s\n",
+						(unsigned)lastSyncedSize, getLocalCRC(lastSyncedSize).c_str());
 				notifyFileUpdated("submitModification");
+				Serial.println("[SYNC] Before onUpdateSuccess");
 				if (onUpdateSuccess) onUpdateSuccess();
+				Serial.println("[SYNC] After onUpdateSuccess");
 			} else {
 				SYNC_LOG1("[SYNC] ERROR: Server accepted, but local write failed!\n");
 				if (onUpdateError) onUpdateError();
 			}
+			Serial.println("[SYNC] PATCH callback EXIT");
 		},
 		[this](const String &error, AsyncHttpRequest *req) {
 			this->lastErrorMsg = error;
@@ -424,7 +447,9 @@ protected:
 			// 412 = Precondition Failed (Someone else changed the file first)
 			if (this->lastHttpCode == 412) {
 				SYNC_LOG1("[SYNC] CRC Mismatch! Server file changed. Triggering sync to heal...\n");
-				syncServerDatabase();
+				delayedtask.once_ms(3, [this]() {
+					syncServerDatabase();
+				});
 			}
 			// Check for duplicate ID error from server
 			else if (error.indexOf("DUPLICATE_ID") != -1) {
@@ -686,7 +711,9 @@ protected:
 				FileFS* dst = SIMPLEFS.openFile(syncFilename.c_str(), "r+");
 				if (!dst) {
 					SYNC_LOG1("[SYNC] performMerge: FAIL cannot open file for r+ -> FULL_UPDATE fallback\n");
-					downloadFull();
+					delayedtask.once_ms(3, [this]() {
+						downloadFull();
+					});
 					return;
 				}
 				SimpleFileFS* sdst = (SimpleFileFS*)dst;
@@ -733,7 +760,9 @@ protected:
 				onUpdateSuccess();
 			}
 			SYNC_LOG1("[SYNC] performMerge END -> triggering pushClientDelta to publish merged tail\n");
-			pushClientDelta();
+			delayedtask.once_ms(3, [this]() {
+				pushClientDelta();
+			});
 		},
 		[this, baseSize, serverTotalSize, clientTotalSize](const String &error, AsyncHttpRequest *req) {
 			SYNC_LOG1("[SYNC] performMerge: FAIL fetch server delta bytes[%u..%u] error=%s\n",

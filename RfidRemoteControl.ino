@@ -1,11 +1,10 @@
 /*
-	Test&fix
-		- test more set & save
-		- test more generateid & save
-		- test set remote command
-		- test attach command to tag
-		- test erase tag
- */
+	prototype:
+		- button : green plug &
+		- speaker:
+		- led: rgb + black
+		*/
+    
 #define ESP32BUILD
 // Supported platforms ESP32
 #include <Ticker.h>
@@ -23,6 +22,7 @@
 
 #include "RfidStateMachine.h"
 
+#include "ConfigMode.h"
 
 #define SAVEBUTTON_PIN 15//36
 #define LED_BUILTIN 2
@@ -33,7 +33,7 @@
 #define IRQ_PIN         17
 
 //#define LED_PIN LED_BUILTIN
-#define BUZZER_PIN 4
+#define BUZZER_PIN 4		// red & black cable and diy red & black plugs
 
 #define LED_RED_PIN 27
 #define LED_GREEN_PIN 14
@@ -54,7 +54,10 @@ RFIDReader reader;
 
 DataManager dataman;
 
-
+// ==============================================================================
+// CONFIG MODE MANAGER
+// ==============================================================================
+ConfigModeManager configMode{CONFIGFILE};
 
 #define BUTTONPAUSEMS 500
 unsigned long buttonts=0;
@@ -77,10 +80,41 @@ void changed(Button2& btn) {
 void tap(Button2& btn) {
     Serial.println("tap");
 }
+void setBuzzerVolume(int i){}; //not implemented
+
+void testBuzzer(){
+	vbeeper.playSpecial("exclamation");
+	delay(2000);
+	setBuzzerVolume(20);
+	vbeeper.playSpecial("exclamation");
+	delay(2000);
+	setBuzzerVolume(40);
+	vbeeper.playSpecial("exclamation");
+	delay(2000);
+	setBuzzerVolume(60);
+	vbeeper.playSpecial("exclamation");
+	delay(2000);
+	setBuzzerVolume(80);
+	vbeeper.playSpecial("exclamation");
+	delay(2000);
+	setBuzzerVolume(100);
+}
 
 void setup() {
 	Serial.begin(115200); // Initialize serial communications with the PC
 	//while (!Serial);      // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
+
+	// Initialize config mode (checks for 3 resets)
+	configMode.begin();
+	SIMPLEFS.begin();
+	// If in config mode, skip normal setup
+	if (configMode.isInConfigMode()) {
+		rgbled.begin();
+		vbeeper.init(BUZZER_PIN);	// init vbeeper
+		vbeeper.playSpecial("exclamation");
+		rgbled.playColor(LED_CONFIGMODE_COLOR);
+		return;
+	}
 
 	//	ledcAttach(LED_PIN, LEDC_BASE_FREQ, LEDC_TIMER_12_BIT);//	ledcFadeWithInterrupt(LED_PIN, 0, 4095, 1000, ledFadeEnded);
 	//	ledexpress.flashPattern("accelerating pulse",1000);
@@ -92,7 +126,7 @@ void setup() {
 //	vbeeper.playSpecial("highbeep");
 //	delay(5000);
 
-	SIMPLEFS.begin();
+
 	SIMPLEFS.printInfo();
 
  	initSM(&rgbled,&vbeeper, &dataman);
@@ -114,6 +148,7 @@ savebutton.setReleasedHandler(released);
 savebutton.setTapHandler(tap);
 */
 	Serial.println(String()+"End setup in "+millis()+" ms");
+	//testBuzzer();
 }
 
 // 65mA after setup, 18.8mA in deep sleep, 150mA peak on start up 110mA on read tag
@@ -123,9 +158,31 @@ savebutton.setTapHandler(tap);
  */
 unsigned ts=0;
 
+void delayWithRgb(unsigned totalpause, unsigned rgbpause){	// maybe rgbled deserves it's own ticker
+	unsigned long tse=millis()+totalpause;
+	bool firsttime=true;
+	rgbled.update();	// executes at least once
+	while(millis()<tse){
+		if(!firsttime) rgbled.update(); else firsttime=false;
+		if(rgbpause+millis()<tse) delay(rgbpause);
+		else delay(tse-millis());
+	}
+}
+
+
+
 
 void loop() {
-	rgbled.update();
+	// Handle config mode web server if active
+	configMode.handleLoop();
+
+	// Skip normal loop if in config mode
+	if (configMode.isInConfigMode()) {
+		delay(10);
+		return;
+	}
+
+//	rgbled.update();
   	dataman.update();
  	savebutton.loop();
 	checkWifi();
@@ -139,8 +196,7 @@ void loop() {
 	} else dataman.noTagFound();
 
  	//ts=millis();
-	delay(50);
-
+	delayWithRgb(30,4);
 }
 
 bool wificonnectedprev=false, connectionfailedprev=false, connectingprev=false;
