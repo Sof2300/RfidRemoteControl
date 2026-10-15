@@ -60,15 +60,18 @@ Superscale operations:
   - `set?id=...` — set/confirm an ID for the scanned tag
   - `set?command=...` — trigger a command on Superscale
   - `json` — read latest command payload (used when attaching commands)
-  - `generateID?nohtml=1` and `save` — generate and save new IDs
+  - `generateIDGet?block-rfid-id-save` — generate new ID and return JSON with `id` and `block-rfid-id-save` fields
+  - `save` — save new IDs
 
  
  
 Remote sync and multi-device coordination:
 
-- Devices synchronize the master `RFID2ID.csv` via Superscale endpoints: `sync_check`, `sync_download`, `sync_download_delta`, `sync_push_delta`, and `sync_patch`.
-- Typical flow: device calls `sync_check` (sends size+CRC); the server replies `UP_TO_DATE`, `FULL_UPDATE`, `PULL_DELTA:...`, or `PUSH_DELTA` so the device downloads deltas/full file or pushes its local changes.
-- Conflicts are detected with CRC/If-Match checks and duplicate-ID errors; the protocol surfaces conflicts so server version prevails.
-- This protocol lets multiple ESP32 devices safely share and update the same RFID mapping file on Superscale.
+- Devices synchronize the master `RFID2ID.csv` via Superscale endpoints: `sync_check`, `sync_download`, and `sync_patch`.
+- Typical flow: device calls `sync_check` (sends size+CRC); the server replies `UP_TO_DATE` or `FULL_UPDATE`.
+  - If `UP_TO_DATE`, the local file is already in sync.
+  - If `FULL_UPDATE`, the device downloads the complete file from the server.
+- For local modifications, the device sends a PATCH request to update both the remote and local file using CRC/If-Match checks to prevent conflicts.
+- This simplified protocol ensures data consistency across multiple ESP32 devices sharing the same RFID mapping file on Superscale.
  
 

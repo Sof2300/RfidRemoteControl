@@ -3,13 +3,14 @@
 		- button : green plug &
 		- speaker:
 		- led: rgb + black
-		*/
-    
+ */
+#include <vector>
 #define ESP32BUILD
 // Supported platforms ESP32
+#include <ioktopuslib.h>
+
 #include <Ticker.h>
 
-#include <mylib.h>
 #include <device/RFIDReader.h>
 #include <device/Beeper.H>
 #include <FS/SimpleFS.H>
@@ -71,14 +72,14 @@ void buttonsave(Button2& btn) {
 }
 
 void released(Button2& btn) {
-    Serial.print("released: ");
-    Serial.println(btn.wasPressedFor());
+	Serial.print("released: ");
+	Serial.println(btn.wasPressedFor());
 }
 void changed(Button2& btn) {
-    Serial.println("changed");
+	Serial.println("changed");
 }
 void tap(Button2& btn) {
-    Serial.println("tap");
+	Serial.println("tap");
 }
 void setBuzzerVolume(int i){}; //not implemented
 
@@ -99,6 +100,23 @@ void testBuzzer(){
 	delay(2000);
 	setBuzzerVolume(100);
 }
+
+void setupReconnect(){
+	String wifireconnectsec=dataman.getConfig(WIFI_RECONNECT_SEC);
+	int reconnectSec = wifireconnectsec.toInt();
+	if(reconnectSec == 0 || wifireconnectsec.length()==0) {
+		setPeriodicReconnect(false);
+		Serial.print(String()+"[WiFi] Periodic reconnect disabled ");
+		if(wifireconnectsec.length()>0) Serial.println(String()+"("+WIFI_RECONNECT_SEC+"="+wifireconnectsec+")");
+		if (wifireconnectsec.length()==0) Serial.println(String()+"("+WIFI_RECONNECT_SEC+" not in config file)"); // Default: disable periodic reconnect if not specified
+	} else {
+		setPeriodicReconnect(true);
+		setPeriodicReconnectInterval(reconnectSec * 1000UL);
+		Serial.printf("[WiFi] Periodic reconnect enabled (interval: %d seconds)\n", reconnectSec);
+	}
+}
+
+
 
 void setup() {
 	Serial.begin(115200); // Initialize serial communications with the PC
@@ -123,30 +141,31 @@ void setup() {
 
 	rgbled.begin();
 	vbeeper.init(BUZZER_PIN);	// init vbeeper
-//	vbeeper.playSpecial("highbeep");
-//	delay(5000);
+	//	vbeeper.playSpecial("highbeep");
+	//	delay(5000);
 
 
 	SIMPLEFS.printInfo();
 
- 	initSM(&rgbled,&vbeeper, &dataman);
+	initSM(&rgbled,&vbeeper, &dataman);
 
 	// then load the distant file from superscale too
-   	dataman.init(CONFIGFILE,RFIDFILE);
+	dataman.init(CONFIGFILE,RFIDFILE);
 
 	String ssid=dataman.getConfig(SSID_KEY);
 	String password=dataman.getConfig(PASSWORD_KEY);
- 	connectWifi(ssid,password);
+	setupReconnect();
+	connectWifi(ssid,password);
 
- 	reader.init(SS_PIN,RST_PIN,IRQ_PIN);
+	reader.init(SS_PIN,RST_PIN,IRQ_PIN);
 	//savebutton.setDebounceTime(30);
-//	savebutton.setPressedState(LOW);
- 	savebutton.setPressedHandler(buttonsave);
-/*
+	//	savebutton.setPressedState(LOW);
+	savebutton.setPressedHandler(buttonsave);
+	/*
 savebutton.setChangedHandler(changed);
 savebutton.setReleasedHandler(released);
 savebutton.setTapHandler(tap);
-*/
+	 */
 	Serial.println(String()+"End setup in "+millis()+" ms");
 	//testBuzzer();
 }
@@ -158,44 +177,48 @@ savebutton.setTapHandler(tap);
  */
 unsigned ts=0;
 
-void delayWithRgb(unsigned totalpause, unsigned rgbpause){	// maybe rgbled deserves it's own ticker
+void delayWithRgb(unsigned totalpause, unsigned rgbpause){
 	unsigned long tse=millis()+totalpause;
-	bool firsttime=true;
-	rgbled.update();	// executes at least once
 	while(millis()<tse){
-		if(!firsttime) rgbled.update(); else firsttime=false;
 		if(rgbpause+millis()<tse) delay(rgbpause);
 		else delay(tse-millis());
 	}
 }
 
 
+bool runConfigMode(){
+	if (configMode.isInConfigMode()) {
+		// Handle config mode web server if active
+		configMode.handleLoop();
+		delay(10);
+		return true;
+	}
+	return false;
+}
 
 
 void loop() {
-	// Handle config mode web server if active
-	configMode.handleLoop();
-
 	// Skip normal loop if in config mode
-	if (configMode.isInConfigMode()) {
-		delay(10);
-		return;
-	}
+	bool configmode=runConfigMode();
+	if(configmode) return;
 
-//	rgbled.update();
-  	dataman.update();
- 	savebutton.loop();
+	AsyncHttpRequest::loop();
+	dataman.update();
+	savebutton.loop();
 	checkWifi();
+
+	processQueueSM();
+
 	//reader.mfrc522_fast_Reset();
- 	String tag =reader.readCard();
+	String tag =reader.readCard();
 	if(!tag.isEmpty()) {
-	 	dataman.tagFound(tag);
+		dataman.tagFound(tag);
 		//	dataman.foundTag(tag);
 		//		tagwaiting=tag;
 		ts=0;
 	} else dataman.noTagFound();
 
- 	//ts=millis();
+	//ts=millis();
 	delayWithRgb(30,4);
 }
 

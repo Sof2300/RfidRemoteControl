@@ -1,10 +1,46 @@
 #ifndef RGBLED_H
 #define RGBLED_H
 
-#include <Arduino.h>
 #include <vector>
 
+#include <Arduino.h>
+#include <Ticker.h>
+
+
 #define MAX_QUEUE 24
+#define LEDTICKERMS 5
+
+#define SLOWLED 582
+#define SPEEDLED 290
+#define FASTLED 145
+#define ULTRALED 36
+
+#define SLOWFADE_DURATION 776
+#define SLOWHOLD_DURATION 388
+#define FADE_DURATION 388
+#define HOLD_DURATION 194
+#define FASTFADE_DURATION 194
+#define FASTHOLD_DURATION 97
+#define SUPERFASTFADE_DURATION 97
+#define SUPERFASTHOLD_DURATION 48
+#define ULTRAFADE_DURATION 24
+#define ULTRAHOLD_DURATION 12
+#define LIGHTNINGFADE_DURATION 12
+#define LIGHTNINGHOLD_DURATION 6
+
+#define SLOWPULSE_DURATION 2327
+#define PULSE_DURATION 582
+#define FASTPULSE_DURATION 194
+#define SUPERFASTPULSE_DURATION 97
+
+#define FADETO_DURATION 1164
+#define TEMP_DURATION 776
+#define TEMPFADEFADE_DURATION 194
+#define TEMPFADEHOLD_DURATION 1164
+#define TEMPPULSEFADE_DURATION 194
+#define TEMPPULSEHOLD_DURATION 1164
+
+
 
 // Sequence interrupt policy options:
 #define SEQ_INTERRUPT_IMMEDIATE 0 // Interrupt sequence immediately on the fly (smoothly fades from current intermediate color)
@@ -70,6 +106,37 @@ static const std::vector<RGBColor> MAGENTA_RAINBOW_PALETTE = {
     {0, 0, 255}        // Blue (240°)
 };
 
+// Safe rainbow without red and orange (used for errors)
+static const std::vector<RGBColor> SAFE_RAINBOW_PALETTE = {
+    {255, 255, 0},     // Yellow (60°)
+    {0, 255, 0},       // Green (120°)
+    {0, 0, 255},       // Blue (240°)
+    {148, 0, 255},     // Violet (275°)
+    {255, 0, 255}      // Magenta (300°)
+};
+
+static const std::vector<RGBColor> SAFE_MAGENTA_RAINBOW_PALETTE = {
+    {255, 0, 255},     // Magenta (300°)
+    {255, 255, 0},     // Yellow (60°)
+    {0, 255, 0},       // Green (120°)
+    {0, 0, 255}        // Blue (240°)
+};
+
+// Generic ping-pong palettes (RGB and CMY for library use)
+static const std::vector<RGBColor> RGB_PINGPONG_PALETTE = {
+    {255, 0, 0},       // Red (A)
+    {0, 255, 0},       // Green (B)
+    {0, 0, 255},       // Blue (C)
+    {0, 255, 0}        // Green (B) - creates A->B->C->B->A loop
+};
+
+static const std::vector<RGBColor> CMY_PINGPONG_PALETTE = {
+    {0, 255, 255},     // Cyan (A)
+    {255, 0, 255},     // Magenta (B)
+    {255, 255, 0},     // Yellow (C)
+    {255, 0, 255}      // Magenta (B) - creates A->B->C->B->A loop
+};
+
 #define RAINBOW_STEPS RAINBOW_PALETTE
 #define MAGENTA_RAINBOW_STEPS MAGENTA_RAINBOW_PALETTE
 
@@ -104,6 +171,9 @@ private:
     unsigned long startTime = 0;
     LedOrder queue[MAX_QUEUE];
     int head = 0, tail = 0, count = 0;
+
+    Ticker updateTicker;
+    bool tickerAttached = false;
 
     SequenceData currentSequence;
 
@@ -148,6 +218,13 @@ private:
 public:
     RGBLed(uint8_t r, uint8_t g, uint8_t b) : pinR(r), pinG(g), pinB(b) {}
 
+    ~RGBLed() {
+        if (tickerAttached) {
+            updateTicker.detach();
+            tickerAttached = false;
+        }
+    }
+
     void setSequenceInterruptMode(SeqInterruptMode mode) {
         seqInterruptMode = mode;
     }
@@ -166,6 +243,12 @@ public:
         ledcAttach(pinB, 5000, 8);
 
         setDirect(0, 0, 0);
+
+        // Start ticker for automatic updates (10ms interval)
+        if (!tickerAttached) {
+            updateTicker.attach_ms(LEDTICKERMS, [this]() { this->update(); });
+            tickerAttached = true;
+        }
     }
 
     bool fadeTo(uint8_t r, uint8_t g, uint8_t b, unsigned long ms) {
@@ -264,6 +347,41 @@ public:
 
     void playMagentaRainbow(unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
         playSequence(MAGENTA_RAINBOW_PALETTE, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    /**
+     * Plays safe rainbow without red and orange (avoids error color confusion).
+     * E.g. playSafeRainbow(200, 100) -> 200ms fade + 100ms pause at each color.
+     */
+    void playSafeRainbow(unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        playSequence(SAFE_RAINBOW_PALETTE, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    void playSafeMagentaRainbow(unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        playSequence(SAFE_MAGENTA_RAINBOW_PALETTE, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    /**
+     * Plays ping-pong sequence (A -> B -> C -> B -> A -> ...).
+     * Useful for distinctive looping patterns without starting point ambiguity.
+     * E.g. playPingPong(colors, 200, 100) -> 200ms fade + 100ms pause at each color.
+     */
+    void playPingPong(const std::vector<RGBColor>& colors, unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        playSequence(colors, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    /**
+     * Pre-configured RGB ping-pong (Red -> Green -> Blue -> Green -> Red).
+     */
+    void playRgbPingPong(unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        playPingPong(RGB_PINGPONG_PALETTE, transitionDuration, pauseDuration, loop, temp);
+    }
+
+    /**
+     * Pre-configured CMY ping-pong (Cyan -> Magenta -> Yellow -> Magenta -> Cyan).
+     */
+    void playCmyPingPong(unsigned long transitionDuration = 200, unsigned long pauseDuration = 100, bool loop = true, bool temp = false) {
+        playPingPong(CMY_PINGPONG_PALETTE, transitionDuration, pauseDuration, loop, temp);
     }
 
     void update() {
@@ -460,62 +578,134 @@ public:
         Serial.println(String() + "RGBLed:: playColor:" + color);
 
         // Permanent Base States
-        if      (color == "red")                 fadeTo(255, 0, 0, 1000);
-        else if (color == "green")               fadeTo(0, 255, 0, 1000);
-        else if (color == "blue")                fadeTo(0, 0, 255, 1000);
-        else if (color == "yellow")              fadeTo(255, 255, 0, 1000);
-        else if (color == "yellowish")           fadeTo(255, 128, 0, 1000);
-        else if (color == "yellowishblue")       fadeTo(255, 128, 64, 1000);
-        else if (color == "white")               fadeTo(255, 255, 255, 1000);
-        else if (color == "orange")              fadeTo(255, 165, 0, 1000);
-        else if (color == "purple")              fadeTo(255, 0, 255, 1000);
-        else if (color == "magenta")             fadeTo(255, 0, 255, 1000);
-        else if (color == "cyan")                fadeTo(0, 255, 255, 1000);
+        if      (color == "red")                 fadeTo(255, 0, 0, FADETO_DURATION);
+        else if (color == "green")               fadeTo(0, 255, 0, FADETO_DURATION);
+        else if (color == "blue")                fadeTo(0, 0, 255, FADETO_DURATION);
+        else if (color == "yellow")              fadeTo(255, 255, 0, FADETO_DURATION);
+        else if (color == "yellowish")           fadeTo(255, 128, 0, FADETO_DURATION);
+        else if (color == "yellowishblue")       fadeTo(255, 128, 64, FADETO_DURATION);
+        else if (color == "white")               fadeTo(255, 255, 255, FADETO_DURATION);
+        else if (color == "orange")              fadeTo(255, 165, 0, FADETO_DURATION);
+        else if (color == "purple")              fadeTo(255, 0, 255, FADETO_DURATION);
+        else if (color == "magenta")             fadeTo(255, 0, 255, FADETO_DURATION);
+        else if (color == "cyan")                fadeTo(0, 255, 255, FADETO_DURATION);
 
         // Permanent Pulse States
-        else if (color == "greenbluepulse")      pulse(0, 255, 255, 0, 255, 0, 500);
-        else if (color == "fastwhitebluepulse")  pulse(255, 255, 255, 0, 255, 0, 100);
-        else if (color == "bluegreen")           pulse(0, 0, 255, 0, 255, 0, 2000);
-        else if (color == "redpulse")            pulse(0, 0, 0, 255, 0, 0, 500);
-        else if (color == "bluered")             pulse(0, 0, 255, 255, 0, 0, 500);
-        else if (color == "fastredpulse")        pulse(0, 0, 0, 255, 0, 0, 200);
-        else if (color == "redbluepulse")        pulse(0, 0, 255, 255, 0, 0, 200);
-        else if (color == "yellowpulse")         pulse(0, 0, 0, 255, 255, 0, 500);
-        else if (color == "fastyellowpulse")     pulse(0, 0, 0, 255, 255, 0, 100);
-        else if (color == "whitepulse")          pulse(0, 0, 0, 255, 255, 255, 500);
-        else if (color == "orangepulse")         pulse(0, 0, 0, 255, 165, 0, 500);
-        else if (color == "purplepulse")         pulse(0, 0, 0, 255, 0, 255, 500);
-        else if (color == "fastpurplepulse")     pulse(0, 0, 0, 255, 0, 255, 100);
-        else if (color == "cyanpulse")           pulse(0, 0, 0, 0, 255, 255, 500);
-        else if (color == "bluishcyanpulse")     pulse(0, 0, 0, 0, 128, 255, 500);
-        else if (color == "fastcyanpulse")       pulse(0, 0, 0, 0, 255, 255, 200);
-        else if (color == "bluepulse")           pulse(0, 0, 0, 0, 0, 255, 200);
+        else if (color == "bluegreen")           pulse(0, 0, 255, 0, 255, 0, SLOWPULSE_DURATION);
+
+        else if (color == "redpulse")            pulse(0, 0, 0, 255, 0, 0, PULSE_DURATION);
+        else if (color == "fastredpulse")        pulse(0, 0, 0, 255, 0, 0, FASTPULSE_DURATION);
+        else if (color == "redbluepulse")        pulse(0, 0, 255, 255, 0, 0, FASTPULSE_DURATION);
+        else if (color == "bluered")             pulse(0, 0, 255, 255, 0, 0, PULSE_DURATION);
+
+        else if (color == "orangepulse")         pulse(0, 0, 0, 255, 165, 0, PULSE_DURATION);
+        else if (color == "fastorangepulse")     pulse(0, 0, 0, 255, 165, 0, FASTPULSE_DURATION);
+        else if (color == "ultraorangepulse")    pulse(0, 0, 0, 255, 165, 0, SUPERFASTPULSE_DURATION);
+
+        else if (color == "yellowpulse")         pulse(0, 0, 0, 255, 255, 0, PULSE_DURATION);
+        else if (color == "fastyellowpulse")     pulse(0, 0, 0, 255, 255, 0, FASTPULSE_DURATION);
+        else if (color == "ultrayellowpulse")    pulse(0, 0, 0, 255, 255, 0, SUPERFASTPULSE_DURATION);
+
+        else if (color == "greenbluepulse")      pulse(0, 255, 255, 0, 255, 0, PULSE_DURATION);
+
+        else if (color == "cyanpulse")           pulse(0, 0, 0, 0, 255, 255, PULSE_DURATION);
+        else if (color == "fastcyanpulse")       pulse(0, 0, 0, 0, 255, 255, FASTPULSE_DURATION);
+        else if (color == "ultracyanpulse")      pulse(0, 0, 0, 0, 255, 255, SUPERFASTPULSE_DURATION);
+        else if (color == "lightningcyanpulse")  pulse(0, 0, 0, 0, 255, 255, LIGHTNINGFADE_DURATION);
+
+        else if (color == "bluishcyanpulse")     pulse(0, 0, 0, 0, 128, 255, PULSE_DURATION);
+        else if (color == "bluepulse")           pulse(0, 0, 0, 0, 0, 255, FASTPULSE_DURATION);
+
+        else if (color == "whitepulse")          pulse(0, 0, 0, 255, 255, 255, PULSE_DURATION);
+        else if (color == "fastwhitepulse")      pulse(0, 0, 0, 255, 255, 255, FASTPULSE_DURATION);
+        else if (color == "ultrawhitepulse")     pulse(0, 0, 0, 255, 255, 255, SUPERFASTPULSE_DURATION);
+
+        else if (color == "purplepulse")         pulse(0, 0, 0, 255, 0, 255, PULSE_DURATION);
+        else if (color == "fastpurplepulse")     pulse(0, 0, 0, 255, 0, 255, FASTPULSE_DURATION);
+        else if (color == "ultrapurplepulse")    pulse(0, 0, 0, 255, 0, 255, SUPERFASTPULSE_DURATION);
+
+        else if (color == "fastwhitebluepulse")  pulse(255, 255, 255, 0, 255, 0, SUPERFASTPULSE_DURATION);
 
         // Temporary Interruptions
-        else if (color == "tempocyan")           tempFade(0, 255, 255, 300, 800);
-        else if (color == "tempoblue")           tempFade(0, 0, 255, 300, 800);
-        else if (color == "tempored")            tempFade(255, 0, 0, 300, 800);
-        else if (color == "tempoyellow")         tempFade(255, 255, 0, 300, 800);
-        else if (color == "tempoyellowish")      tempFade(255, 128, 0, 300, 800);
-        else if (color == "tempowhite")          tempFade(255, 255, 255, 300, 800);
-        else if (color == "tempoorange")         tempFade(255, 165, 0, 300, 800);
-        else if (color == "tempopurple")         tempFade(255, 0, 255, 300, 800);
+        else if (color == "tempocyan")           tempFade(0, 255, 255, 300, TEMP_DURATION);
+        else if (color == "tempoblue")           tempFade(0, 0, 255, 300, TEMP_DURATION);
+        else if (color == "tempored")            tempFade(255, 0, 0, 300, TEMP_DURATION);
+        else if (color == "tempoyellow")         tempFade(255, 255, 0, 300, TEMP_DURATION);
+        else if (color == "tempoyellowish")      tempFade(255, 128, 0, 300, TEMP_DURATION);
+        else if (color == "tempowhite")          tempFade(255, 255, 255, 300, TEMP_DURATION);
+        else if (color == "tempoorange")         tempFade(255, 165, 0, 300, TEMP_DURATION);
+        else if (color == "tempopurple")         tempFade(255, 0, 255, 300, TEMP_DURATION);
 
         // Temp then state change
-        else if (color == "tempobluethenred")    tempThenFade(0, 0, 255, 200, 1000, 255, 0, 0);
-        else if (color == "tempoyellowthengreen") tempThenFade(255, 255, 0, 200, 1000, 0, 255, 0);
-        else if (color == "tempobluethengreen")  tempThenFade(0, 0, 255, 200, 1000, 0, 255, 0);
-        else if (color == "tempowhitethengreen") tempThenFade(255, 255, 255, 200, 1000, 0, 255, 0);
-        else if (color == "tempobluethenpulse")  tempThenPulse(0, 0, 255, 200, 1000, 255, 0, 0, 255, 255, 255, 500);
+        else if (color == "tempobluethenred")    tempThenFade(0, 0, 255, TEMP_DURATION, TEMPFADEHOLD_DURATION, 255, 0, 0);
+        else if (color == "tempoyellowthengreen") tempThenFade(255, 255, 0, TEMP_DURATION, TEMPFADEHOLD_DURATION, 0, 255, 0);
+        else if (color == "tempobluethengreen")  tempThenFade(0, 0, 255, TEMP_DURATION, TEMPFADEHOLD_DURATION, 0, 255, 0);
+        else if (color == "tempowhitethengreen") tempThenFade(255, 255, 255, TEMP_DURATION, TEMPFADEHOLD_DURATION, 0, 255, 0);
+        else if (color == "tempobluethenpulse")  tempThenPulse(0, 0, 255, TEMP_DURATION, TEMPFADEHOLD_DURATION, 255, 0, 0, 255, 255, 255, 500);
 
         // Sequences (transitionDuration, pauseDuration)
-        else if (color == "rainbow")             playRainbow(400, 200, true, false); // 200ms fade + 100ms pause at each color
-        else if (color == "fastrainbow")         playRainbow(160, 80, true, false);   // 80ms fade + 40ms pause
-        else if (color == "superfastrainbow")         playRainbow(160, 30, true, false);   // 80ms fade + 40ms pause
-        else if (color == "slowrainbow")         playRainbow(800, 400, true, false); // 400ms fade + 200ms pause
-        else if (color == "rainbowtemp")         playRainbow(200, 100, true, true);
-        else if (color == "magentapulse")        playMagentaRainbow(200, 100, true, false);
-        else if (color == "fastmagentapulse")    playMagentaRainbow(80, 40, true, false);
+        else if (color == "rainbow")             playRainbow(FADE_DURATION, HOLD_DURATION, true, false); // 400ms fade + 200ms pause at each color
+        else if (color == "fastrainbow")         playRainbow(FASTFADE_DURATION, FASTHOLD_DURATION, true, false);   // 160ms fade + 80ms pause
+        else if (color == "superfastrainbow")    playRainbow(SUPERFASTFADE_DURATION, SUPERFASTHOLD_DURATION, true, false);   // 160ms fade + 30ms pause
+        else if (color == "ultrarainbow")        playRainbow(ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+        else if (color == "slowrainbow")         playRainbow(SLOWFADE_DURATION, SLOWHOLD_DURATION, true, false); // 800ms fade + 400ms pause
+        else if (color == "rainbowtemp")         playRainbow(FASTFADE_DURATION, FASTHOLD_DURATION, true, true);
+        else if (color == "magentapulse")        playMagentaRainbow(FASTFADE_DURATION, FASTHOLD_DURATION, true, false);
+        else if (color == "fastmagentapulse")    playMagentaRainbow(SUPERFASTFADE_DURATION, SUPERFASTHOLD_DURATION, true, false);
+        else if (color == "ultramagentapulse")   playMagentaRainbow(ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+
+        // Safe rainbow sequences (without red/orange)
+        else if (color == "saferainbow")         playSafeRainbow(FADE_DURATION, HOLD_DURATION, true, false);
+        else if (color == "fastsaferainbow")     playSafeRainbow(FASTFADE_DURATION, FASTFADE_DURATION, true, false);
+        else if (color == "superfastsaferainbow") playSafeRainbow(SUPERFASTFADE_DURATION, SUPERFASTHOLD_DURATION, true, false);
+        else if (color == "ultrasaferainbow")    playSafeRainbow(ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+        else if (color == "slowsaferainbow")     playSafeRainbow(SLOWFADE_DURATION, SLOWHOLD_DURATION, true, false);
+        else if (color == "safemagentapulse")    playSafeMagentaRainbow(FASTFADE_DURATION, 100, true, false);
+        else if (color == "fastsafemagentapulse") playSafeMagentaRainbow(SUPERFASTFADE_DURATION, SUPERFASTHOLD_DURATION, true, false);
+        else if (color == "ultrasafemagentapulse") playSafeMagentaRainbow(ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+
+        // Generic ping-pong sequences (library-provided palettes)
+        else if (color == "rgbpingpong")         playRgbPingPong(FADE_DURATION, HOLD_DURATION, true, false);
+        else if (color == "fastrgbpingpong")     playRgbPingPong(FASTFADE_DURATION, FASTHOLD_DURATION, true, false);
+        else if (color == "ultrargbpingpong")    playRgbPingPong(ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+        else if (color == "slowrgbpingpong")     playRgbPingPong(SLOWFADE_DURATION, SLOWHOLD_DURATION, true, false);
+        else if (color == "cmypingpong")         playCmyPingPong(FADE_DURATION, HOLD_DURATION, true, false);
+        else if (color == "fastcmypingpong")     playCmyPingPong(FASTFADE_DURATION, FASTHOLD_DURATION, true, false);
+        else if (color == "ultracmypingpong")    playCmyPingPong(ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+        else if (color == "slowcmypingpong")     playCmyPingPong(SLOWFADE_DURATION, SLOWHOLD_DURATION, true, false);
+
+        // Hardcoded application-specific ping-pong sequences
+        else if (color == "yellowbluewhite-pingpong") {
+            static const std::vector<RGBColor> palette = {{255, 255, 0}, {0, 0, 255}, {255, 255, 255}, {0, 0, 255}};
+            playPingPong(palette, FADE_DURATION, HOLD_DURATION, true, false);
+        } else if (color == "fast-yellowbluewhite-pingpong") {
+            static const std::vector<RGBColor> palette = {{255, 255, 0}, {0, 0, 255}, {255, 255, 255}, {0, 0, 255}};
+            playPingPong(palette, FASTFADE_DURATION, FASTHOLD_DURATION, true, false);
+        } else if (color == "slow-yellowbluewhite-pingpong") {
+            static const std::vector<RGBColor> palette = {{255, 255, 0}, {0, 0, 255}, {255, 255, 255}, {0, 0, 255}};
+            playPingPong(palette, SLOWFADE_DURATION, SLOWHOLD_DURATION, true, false);
+        } else if (color == "ultra-yellowbluewhite-pingpong") {
+            static const std::vector<RGBColor> palette = {{255, 255, 0}, {0, 0, 255}, {255, 255, 255}, {0, 0, 255}};
+            playPingPong(palette, ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+        } else if (color == "lightning-yellowbluewhite-pingpong") {
+            static const std::vector<RGBColor> palette = {{255, 255, 0}, {0, 0, 255}, {255, 255, 255}, {0, 0, 255}};
+            playPingPong(palette, LIGHTNINGFADE_DURATION, LIGHTNINGHOLD_DURATION, true, false);
+        } else if (color == "cyanpurplemagenta-pingpong") {
+            static const std::vector<RGBColor> palette = {{0, 255, 255}, {128, 0, 128}, {255, 0, 255}, {128, 0, 128}};
+            playPingPong(palette, FADE_DURATION, HOLD_DURATION, true, false);
+        }  else if (color == "fast-cyanpurplemagenta-pingpong") {
+            static const std::vector<RGBColor> palette = {{0, 255, 255}, {128, 0, 128}, {255, 0, 255}, {128, 0, 128}};
+            playPingPong(palette, FASTFADE_DURATION, FASTHOLD_DURATION, true, false);
+        } else if (color == "slow-cyanpurplemagenta-pingpong") {
+            static const std::vector<RGBColor> palette = {{0, 255, 255}, {128, 0, 128}, {255, 0, 255}, {128, 0, 128}};
+            playPingPong(palette, SLOWFADE_DURATION, SLOWHOLD_DURATION, true, false);
+        } else if (color == "ultra-cyanpurplemagenta-pingpong") {
+            static const std::vector<RGBColor> palette = {{0, 255, 255}, {128, 0, 128}, {255, 0, 255}, {128, 0, 128}};
+            playPingPong(palette, ULTRAFADE_DURATION, ULTRAHOLD_DURATION, true, false);
+        } else if (color == "lightning-cyanpurplemagenta-pingpong") {
+            static const std::vector<RGBColor> palette = {{0, 255, 255}, {128, 0, 128}, {255, 0, 255}, {128, 0, 128}};
+            playPingPong(palette, LIGHTNINGFADE_DURATION, LIGHTNINGHOLD_DURATION, true, false);
+        }
     }
 };
 

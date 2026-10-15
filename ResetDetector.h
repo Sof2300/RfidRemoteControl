@@ -13,7 +13,7 @@ protected:
     uint32_t count = 0;
     uint32_t timeout_ms;
     Ticker ticker;
-   
+
     virtual void expire() {count = 0;} // Virtual so the derived class can inject NVS clearing
 public:
     MultiClickDetector(uint32_t timeout) : timeout_ms(timeout) {}

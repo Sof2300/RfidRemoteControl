@@ -1,7 +1,6 @@
 #ifndef RFIDSTATEMACHINE_H
 #define RFIDSTATEMACHINE_H
 
-#include <Ticker.h>
 #include <queue>
 
 #include <device/Beeper.H>
@@ -14,7 +13,7 @@
 #define SYNC_WAIT_DURATION 5000
 
 std::queue<String> evtQueue;
-Ticker evtTicker;
+
 
 
 
@@ -25,17 +24,22 @@ protected:
 	DataManager *dataman = nullptr;
 
 	Ticker smticker;
+	bool commavailable=false;
 
 public:
+
 	RfidStateMachine() : StateMachine("RfidStateMachine", nullptr, "WifiDisconnected") {}
+
+	bool isCommAvailable(){return commavailable;}
+	void setCommAvailable(bool newvalue){commavailable=newvalue;}
 
 	void sendTemporaryMessage(String message){
 		if(!dataman) return;
-			dataman->sendMessage(message,6);
+		if(isCommAvailable()) dataman->sendMessage(message,6);
 	}
 	void sendPermanentMessage(String message){
 		if(!dataman) return;
-			dataman->sendMessage(message,0);
+		if(isCommAvailable()) dataman->sendMessage(message,0);
 	};
 
 
@@ -121,20 +125,28 @@ public:
 		RGBLed *rgbled = nullptr;
 		VBeeper *vbeeper = nullptr;
 		DataManager *dataman = nullptr;
+		bool firsttime=true;
+
 
 		void sendTemporaryMessage(String message){
 			if(!dataman) return;
-			dataman->sendMessage(message,6);
+			if (((RfidStateMachine*)parent)->isCommAvailable()) dataman->sendMessage(message,6);
 		}
 		void sendPermanentMessage(String message){
 			if(!dataman) return;
-			dataman->sendMessage(message,0);
+			if (((RfidStateMachine*)parent)->isCommAvailable()) dataman->sendMessage(message,0);
 		};
 
 		StateSynced(StateMachine* p) : StateMachine("Synced", p, "idle") {
-			((RfidStateMachine*)p)->applyNetworkUI(*this,{EVENT_WIFI_LOST, EVENT_SYNC_ERROR, EVENT_SYNC_NOSUPERSCALE});
-			((RfidStateMachine*)p)->onEnter("Synced",[this]() {
-				sendTemporaryMessage(String()+APP_NAME+" synced with superscale !");
+			RfidStateMachine* myrsm = static_cast<RfidStateMachine*>(p);
+			myrsm->applyNetworkUI(*this,{EVENT_WIFI_LOST, EVENT_SYNC_ERROR, EVENT_SYNC_NOSUPERSCALE});
+			myrsm->onEnter("Synced",[this, myrsm]() {
+		//		sendTemporaryMessage(String()+APP_NAME+" synced with superscale !");
+				firsttime=true;
+				myrsm->setCommAvailable(true);
+			});
+			p->onLeave("Synced",[this, myrsm]() {
+				myrsm->setCommAvailable(false);
 			});
 		};
 	private:
@@ -163,12 +175,13 @@ public:
 
 		}
 
-		void briefErrorFB(String error=""){
+		void briefErrorFB(String error="", bool makeitpermanent=false){
 			vbeeper->playSpecial("shortfail");
 			rgbled->playColor(LED_ERROR_COLOR);
 			String e;
 			if(error.length()>0) e=String()+": "+error;
-			sendTemporaryMessage(String()+APP_NAME+" encountered an error"+e);
+			if(makeitpermanent) sendPermanentMessage(String()+APP_NAME+" encountered an error"+e);
+			else sendTemporaryMessage(String()+APP_NAME+" encountered an error"+e);
 		}
 		void writeConfirmFB(){
 			vbeeper->playSpecial("highbeep");
@@ -185,7 +198,10 @@ public:
 			s.onEnter([this]() {
 				vbeeper->playSpecial("ready");
 				rgbled->playColor(LED_SYNCED_COLOR);
-				sendPermanentMessage(String()+APP_NAME+" ready: scan a new rfid tag !");
+				Serial.println(String()+"First:"+firsttime);
+				if(firsttime) sendPermanentMessage(String()+APP_NAME+" ready: scan a new rfid tag !");
+				else sendTemporaryMessage(String()+APP_NAME+" ready to scan a new rfid tag !");
+				firsttime=false;
 			});
 			applyCommonUI(s);
 		}};
@@ -200,10 +216,10 @@ public:
 			});
 			s.on(EVENT_SAVE_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				writeConfirmFB();
-				//				sendTemporaryMessage(String()+APP_NAME+" saved block "+dataman->getCurrentID()+", "+dataman->getCurrentCommand());
+				sendPermanentMessage(String()+APP_NAME+" saved on superscale block "+dataman->getCurrentID()+", "+dataman->getCurrentCommand());
 			});
 			s.on(EVENT_SAVE_FAIL, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB();
+				briefErrorFB(String()+APP_NAME+" failed to save on superscale block "+dataman->getCurrentID()+", "+dataman->getCurrentCommand()+", with error:"+dataman->getStatusText(), true);
 			});
 		}};
 
@@ -226,7 +242,7 @@ public:
 		// SET READY: got ok from server
 		State setready{"setready", this, [this](State& s) {
 			s.onEnter([this]() {
-				sendPermanentMessage(String()+APP_NAME+" set id to "+dataman->getCurrentID());
+				sendPermanentMessage(String()+APP_NAME+" set ID to "+dataman->getCurrentID()+", press button to save");
 			});
 			applyCommonUI(s, {EVENT_BUTTON_PRESS});
 			s.on(EVENT_BUTTON_PRESS, "saving");
@@ -248,24 +264,23 @@ public:
 				if (!dataman->validateGeneratedId(dataman->getCurrentID())) {
 					Serial.println("State machine: Generated ID already exists in database, rejecting.");
 					dispatchEventSM(EVENT_GENERATEID_INVALID);// Force transition to idle on duplicate ID
-					sendTemporaryMessage(String()+APP_NAME+": Generated ID already exists in database, rejecting!");
+					sendPermanentMessage(String()+APP_NAME+": Generated ID already exists in database, rejecting!");
 					return false;
 				};
 				return true;
 			});
 			s.on(EVENT_GENERATEID_INVALID, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB("generating ID failed: id invalid");
-				briefErrorFB("generating ID failed: id invalid");
+				briefErrorFB("generating ID failed: id invalid",true);
 			});
 			s.on(EVENT_GENERATE_FAIL, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB("generating ID failed");
+				briefErrorFB("generating ID failed",true);
 			});
 
 		}};
 		// GENERATE IS READY
 		State generateready{"generateready", this, [this](State& s) {
 			s.onEnter([this]() {
-				sendPermanentMessage(String()+APP_NAME+" generated id "+dataman->getCurrentID()+" for tag "+dataman->getCurrentTag());
+				sendPermanentMessage(String()+APP_NAME+" ready to associate tag "+dataman->getCurrentTag()+" with ID "+dataman->getCurrentID()+", press button to save");
 			});
 			applyCommonUI(s, {EVENT_BUTTON_PRESS});
 			s.on(EVENT_BUTTON_PRESS, "savingGenerate");
@@ -275,12 +290,21 @@ public:
 			s.onEnter([this]() {
 				vbeeper->playSpecial("shortup");
 				rgbled->playColor(LED_SAVEINPROGRESS_COLOR);
-				dataman->triggerSave();
+				// Check if we should skip the server save request
+				String blockRfidIdSave = dataman->getBlockRfidIdSave();
+				blockRfidIdSave.toLowerCase();
+				if(blockRfidIdSave != "0" && blockRfidIdSave != "false") {
+					Serial.println("State machine: block-rfid-id-save is '" + blockRfidIdSave + "', skipping server save request");
+					dispatchEventSM(EVENT_SAVE_SUCCESS);
+				} else {
+					Serial.println("State machine: block-rfid-id-save is '" + blockRfidIdSave + "', proceeding with server save request");
+					dataman->triggerSave();
+				}
 			});
 			s.on(EVENT_SAVE_SUCCESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
-					dataman->saveCurrentRfid();
+				dataman->saveCurrentRfid();
 				writeConfirmFB();
-				sendTemporaryMessage(String()+APP_NAME+" associated tag "+dataman->getCurrentTag()+"with id "+dataman->getCurrentID());
+//				sendPermanentMessage(String()+APP_NAME+" associating tag "+dataman->getCurrentTag()+" with ID "+dataman->getCurrentID());
 			}).attachGuard([this](EventSource& e) {
 				if (!dataman->validateGeneratedId(dataman->getCurrentID())) {
 					Serial.println("State machine: Generated ID already exists in database, rejecting.");
@@ -293,10 +317,9 @@ public:
 			});
 			s.on(EVENT_GENERATEID_INVALID, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB("generating ID failed  !");
-				briefErrorFB("generating ID failed  !");
 			});
 			s.on(EVENT_SAVE_FAIL, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB();
+				briefErrorFB(dataman->getStatusText());
 			});
 		}};
 		State rfiddbsyncing{"rfiddbsyncing", this, [this](State& s) {
@@ -309,12 +332,13 @@ public:
 			});
 			s.on(EVENT_PATCH_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				writeConfirmRfidFB();
+				sendPermanentMessage(String()+APP_NAME+" successfully associated ID "+dataman->getCurrentID()+" with tag "+dataman->getCurrentTag()+" !");
 			});
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB();
+				briefErrorFB("Sync error");
 			});
 			s.on(EVENT_PATCH_ERROR, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB();
+				briefErrorFB("Patch error");
 			});
 		}};
 
@@ -325,6 +349,8 @@ public:
 				vbeeper->playSpecial("reconnu3");
 				rgbled->playColor(LED_COMMANDINPROGRESS_COLOR);
 				dataman->fetchSetCommand(dataman->getCurrentCommand());
+				sendPermanentMessage(String()+APP_NAME+" Command set to "+dataman->getCurrentCommand()+" !");
+
 			});
 			s.on(EVENT_SET_COMMAND_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("ok");
@@ -342,18 +368,20 @@ public:
 				vbeeper->playSpecial("reconnu4");
 				rgbled->playColor(LED_ATTACHCOMMAND_BLINKCOLOR);
 				dataman->fetchCommand();
-				sendPermanentMessage(String()+APP_NAME+" attaching current command ");
 			});
 			applyCommonUI(s,{EVENT_BUTTON_PRESS,EVENT_RFID_UNKNOWN, EVENT_RFID_KNOWN});
 			s.on(EVENT_RFID_UNKNOWN, "attachcommandnewrfid").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("ready");
 				rgbled->playColor(LED_ATTACHCOMMAND_COLOR);
+				sendPermanentMessage(String()+APP_NAME+" press button to attach command "+dataman->getCurrentCommand()+" to tag "+dataman->getCurrentTag());
 			});
 			s.on(EVENT_RFID_KNOWN, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB();
+				sendTemporaryMessage(String()+APP_NAME+" cancelled attach command");
 			});
 			s.on(EVENT_BUTTON_PRESS, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB();
+				sendTemporaryMessage(String()+APP_NAME+" cancelled attach command");
 			});
 		}};
 		// ATTACH COMMAND and NEW RFID
@@ -362,7 +390,7 @@ public:
 			s.on(EVENT_BUTTON_PRESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
 				dataman->saveCurrentRfid(String()+"command:"+dataman->getCurrentCommand());
 				writeConfirmFB();
-				sendPermanentMessage(String()+APP_NAME+" attached command "+dataman->getCurrentCommand()+" to tag "+dataman->getCurrentTag());
+				sendPermanentMessage(String()+APP_NAME+" successfully attached Command "+dataman->getCurrentCommand()+" to tag "+dataman->getCurrentTag()+" !");
 
 			});
 		}};
@@ -377,28 +405,33 @@ public:
 			});
 			s.on(EVENT_BUTTON_PRESS, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB();
+				sendTemporaryMessage(String()+APP_NAME+" out of erase mode");
 			});
 			s.on(EVENT_RFID_UNKNOWN, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB();
+				sendTemporaryMessage(String()+APP_NAME+" out of erase mode");
 			});
 			s.on(EVENT_RFID_KNOWN, "erasecommandconfirm").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("shortup");
 				rgbled->playColor(LED_ERASE_BLINKFASTCOLOR);
+				sendPermanentMessage(String()+APP_NAME+" erasing tag "+dataman->getCurrentTag()+" with ID "+dataman->getCurrentID()+", press to confirm ");
 			});
 			s.on(EVENT_RFID_COMMAND, "erasecommandconfirm").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("shortup");
 				rgbled->playColor(LED_ERASE_BLINKFASTCOLOR);
+				sendPermanentMessage(String()+APP_NAME+" erasing tag "+dataman->getCurrentTag()+" with Command "+dataman->getCurrentCommand()+", press to confirm ");
 			});
 		}};
 		State erasecommandconfirm{"erasecommandconfirm", this, [this](State& s) {
 			s.onEnter([this]() {
-				sendPermanentMessage(String()+APP_NAME+" erasing tag: confirm to erase tag "+dataman->getCurrentTag());
+//				sendPermanentMessage(String()+APP_NAME+" erasing tag: confirm to erase tag "+dataman->getCurrentTag());
 			});
 			applyCommonUI(s, {EVENT_BUTTON_PRESS});
 			s.on(EVENT_BUTTON_PRESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
 				dataman->eraseCurrentRfid();
 				vbeeper->playSpecial("superhighbeep");
-				rgbled->playColor(LED_ERASE_COLOR);
+				rgbled->playColor(LED_ERASE_CONFIRM_COLOR);
+				sendPermanentMessage(String()+APP_NAME+" successfully erased tag "+dataman->getCurrentTag()+" !");
 			});
 		}};
 
@@ -409,7 +442,7 @@ public:
 			s.onEnter([this]() {
 				vbeeper->playSpecial("bungee");
 				rgbled->playColor(LED_UNDO_BLINKCOLOR);
-				sendPermanentMessage(String()+APP_NAME+" undo: press button to undo last action ");
+				sendPermanentMessage(String()+APP_NAME+" undo: press button to undo last action on superscale");
 			});
 			s.on(EVENT_BUTTON_PRESS, "undoexecute").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("shortup");
@@ -422,8 +455,8 @@ public:
 			});
 			s.on(EVENT_UNDO_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("superhighbeep");
-				rgbled->playColor(LED_UNDO_COLOR);
-				sendTemporaryMessage(String()+APP_NAME+" undo successful");
+				rgbled->playColor(LED_UNDO_CONFIRM_COLOR);
+				sendPermanentMessage(String()+APP_NAME+" undo on superscale successful!");
 			});
 			s.on(EVENT_UNDO_FAIL, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB();
@@ -452,7 +485,8 @@ public:
 			s.on(EVENT_RFIDUNDO_SUCCESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("superhighbeep");
 				rgbled->playColor(LED_RFIDUNDO_COLOR);
-				sendTemporaryMessage(String()+APP_NAME+" rfid-undo successful");
+				String undoDesc = dataman->getLastUndoDescription();
+				sendPermanentMessage(String()+APP_NAME+" rfid-undo successful: "+undoDesc+" undone");
 			});
 			s.on(EVENT_RFIDUNDO_FAIL, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB();
@@ -465,12 +499,10 @@ public:
 	void setVBeeper(VBeeper *vbeeper0){vbeeper=vbeeper0;stateSynced.vbeeper = vbeeper0;};
 } rsm;
 
-
 void initSM(RGBLed *rgbled0, VBeeper *vbeeper0, DataManager *dataman0) {
 	Serial.println("Initializing FSM...");
 	vbeeper0->playSpecial(BUZZER_BOOT);
 	rgbled0->playColor(LED_INIT_COLOR);
-
 
 
 	//	rgbled0->playColor("rainbow");
@@ -486,16 +518,18 @@ StateMachine &getSM(){return rsm;}
 
 
 
-void processQueue() { // The callback that pulls from the queue
-    rsm.dispatch(evtQueue.front()); // 1. Execute the oldest event
-    evtQueue.pop();                 // 2. Remove it from the queue
-    if (!evtQueue.empty()) evtTicker.once_ms(3, processQueue); // 3. If more remain, trigger again in 3ms
+void processQueueSM() { // The callback that pulls from the queue
+    while (!evtQueue.empty()) {
+        rsm.dispatch(evtQueue.front()); // 1. Execute the oldest event
+        evtQueue.pop();                 // 2. Remove it from the queue
+    }
 }
 
 void dispatchEventSM(String eventname) {
     evtQueue.push(eventname);
-    if (evtQueue.size() == 1) evtTicker.once_ms(3, processQueue); // If size is 1, the ticker was idle. Kickstart it.
 }
+
+
 
 
 

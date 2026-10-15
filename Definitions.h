@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 
-#define APP_NAME "Tzizika Rfid Remote Control"
+#define APP_NAME "Tzizika"// Rfid Remote Control"
 
 
 //////////////////////////////////////////
@@ -18,6 +18,11 @@
 #define RFID_UNDO_COMMAND_KEYWORD "meta:rfid-undo"
 #define SSID_KEY "ssid"
 #define PASSWORD_KEY "password"
+#define WIFI_RECONNECT_SEC "wifireconnectsec"
+
+#define COMM_CHANNEL_NAME "comm"
+#define SYNC_CHANNEL_NAME "sync"
+#define MESSAGE_CHANNEL_NAME "message"
 
 #define EVENT_NOSUPERSCALE_CONFIG "NOSUPERSCALE_CONFIG"
 #define EVENT_WIFI_CONNECTING "WIFI_CONNECTING"
@@ -72,9 +77,9 @@
 #define LED_SYNCED_COLOR "green"
 #define LED_CONFIRM_COLOR "tempoblue"
 
-#define LED_SETINPROGRESS_COLOR "yellow"
-#define LED_SETREADY_COLOR "yellowpulse"
-#define LED_GENERATEINPROGRESS_COLOR "white"
+#define LED_SETINPROGRESS_COLOR "ultrayellowpulse"
+#define LED_SETREADY_COLOR "fastyellowpulse"
+#define LED_GENERATEINPROGRESS_COLOR "ultrawhitepulse"
 #define LED_GENERATEREADY_COLOR "whitepulse"
 #define LED_GENERATESAVE_COLOR "fastwhitebluepulse"
 #define LED_SYNCING_COLOR "yellowpulse"
@@ -84,21 +89,21 @@
 
 #define LED_COMMANDINPROGRESS_COLOR "orangepulse"
 #define LED_COMMAND_COLOR "tempoorange"
-#define LED_ATTACHCOMMAND_BLINKCOLOR "purplepulse"
+#define LED_ATTACHCOMMAND_BLINKCOLOR "ultrapurplepulse"
 #define LED_ATTACHCOMMAND_COLOR "fastpurplepulse"
-#define LED_ERASE_BLINKCOLOR "cyanpulse"
-#define LED_ERASE_BLINKFASTCOLOR "fastcyanpulse"
-#define LED_ERASE_COLOR "cyan"
+#define LED_ERASE_BLINKCOLOR "fastcyanpulse"
+#define LED_ERASE_BLINKFASTCOLOR "ultracyanpulse"
+#define LED_ERASE_CONFIRM_COLOR "lightningcyanpulse"
 
-#define LED_UNDO_BLINKCOLOR "rainbow"
-#define LED_UNDO_BLINKFASTCOLOR "fastrainbow"
-#define LED_UNDO_COLOR "slowrainbow"
+#define LED_UNDO_BLINKCOLOR "fast-yellowbluewhite-pingpong"
+#define LED_UNDO_BLINKFASTCOLOR "ultra-yellowbluewhite-pingpong"
+#define LED_UNDO_CONFIRM_COLOR "lightning-yellowbluewhite-pingpong"
 
-#define LED_RFIDUNDO_BLINKCOLOR "magentapulse"
-#define LED_RFIDUNDO_BLINKFASTCOLOR "fastmagentapulse"
-#define LED_RFIDUNDO_COLOR "magenta"
+#define LED_RFIDUNDO_BLINKCOLOR "fast-cyanpurplemagenta-pingpong"
+#define LED_RFIDUNDO_BLINKFASTCOLOR "ultra-cyanpurplemagenta-pingpong"
+#define LED_RFIDUNDO_COLOR "lightning-cyanpurplemagenta-pingpong"
 
-#define LED_CONFIGMODE_COLOR "superfastrainbow"
+#define LED_CONFIGMODE_COLOR "superfastsaferainbow"
 
 #define BUZZER_BOOT "on"
 

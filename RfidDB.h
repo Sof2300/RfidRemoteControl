@@ -2,7 +2,6 @@
 #define RFIDDB_H
 
 #include "RemoteSyncFile.h"
-//#include "Ticker.h"
 #include <vector>
 
 #include "Definitions.h"
@@ -44,7 +43,6 @@ struct StructuredTag {
 
 class RfidDB : public RemoteSyncFile {
 
-	//Ticker ticker;
 	bool busy=false,synced=false, error=false;
 	long syncts=0;
 
@@ -327,7 +325,7 @@ public:
 			return "";
 		}
 
-		const size_t BLOCK_SIZE = 1024; // Read 1KB at a time
+		const size_t BLOCK_SIZE = BLOCK_SIZE_DEFINE; // Read 1KB at a time
 		char buffer[BLOCK_SIZE + 1];
 		String carryOver = ""; // Holds partial lines between blocks
 

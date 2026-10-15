@@ -2,6 +2,7 @@
 #define REMOTESYNCFILE_H
 
 #include <functional>
+#include "Definitions.h"
 #include "AsyncHttpRequest.h"
 #include "FileUtils.h"
 
@@ -32,8 +33,6 @@ protected:
 	String syncFilename;
 	size_t lastSyncedSize = 0;
 
-	Ticker delayedtask;
-
 	// Virtual function called when the file is updated (Full or Delta)
 	virtual void onFileUpdated() = 0;
 
@@ -51,7 +50,7 @@ protected:
 		if (httpCode <= 0) {
 			SYNC_LOG1("ERROR: Server is NOT REACHABLE!\n");
 			SYNC_LOG1("Reason: %s\n", this->lastErrorMsg);
-			return 0;
+			return false;
 			// lastErrorMsg will be things like: "connection refused", "timeout", or "DNS failed"
 		}
 		// Otherwise, the server was reached, but it returned an HTTP error
@@ -64,11 +63,9 @@ protected:
 				SYNC_LOG1("Reason: Server crashed or had an internal error.\n");
 			}
 
-			return 1;
+			return true;
 		}
 	}
-protected:
-	//	virtual bool checkDeltaConflict(const String& serverDelta, const String& clientDelta)=0;
 public:
 	// UI Callbacks
 	std::function<void()> onUpdateSuccess;
@@ -141,53 +138,11 @@ public:
 					onUpdateSuccess();
 				}
 			}
-			else if (response == "FULL_UPDATE") {
-				SYNC_LOG1("[SYNC] -> FULL_UPDATE dispatched (base CRC mismatch; server wins)\n");
-				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->downloadFull) ====\n");
-				//downloadFull();
-				delayedtask.once_ms(3, [this]() {
-					downloadFull();
-				});
-			}
-			else if (response.startsWith("PULL_DELTA:")) {
-				String tail = response.substring(strlen("PULL_DELTA:"));
-				tail.trim();
-				long sts = tail.toInt();
-				if (sts <= 0 || (size_t)sts < checkSize) {
-					SYNC_LOG1("[SYNC] -> PULL_DELTA has bad serverTotalSize=%ld checkSize=%u -> fallback FULL_UPDATE\n",
-							sts, (unsigned)checkSize);
-					SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->downloadFull fallback) ====\n");
-					delayedtask.once_ms(3, [this]() {
-						downloadFull();
-					});
-				} else {
-					size_t serverTotalSize = (size_t)sts;
-					bool bothSidesAppended = (currentSize > checkSize);
-					SYNC_LOG2("[SYNC] -> PULL_DELTA dispatched. base=%u serverSize=%u clientSize=%u bothSides=%s\n",
-							(unsigned)checkSize, (unsigned)serverTotalSize, (unsigned)currentSize,
-							bothSidesAppended ? "YES(client+server both appended)" : "NO(server-only append)");
-					SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->performMerge) ====\n");
-					delayedtask.once_ms(3, [this, checkSize, serverTotalSize, currentSize]() {
-						performMerge(checkSize, serverTotalSize, currentSize);
-					});
-
-				}
-			}
-			else if (response == "PUSH_DELTA") {
-				SYNC_LOG2("[SYNC] -> PUSH_DELTA dispatched. unpushedBytes=%u\n",
-						currentSize > lastSyncedSize ? (unsigned)(currentSize - lastSyncedSize) : 0u);
-				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->pushClientDelta) ====\n");
-				pushClientDelta();
-				delayedtask.once_ms(3, [this]() {
-					pushClientDelta();
-				});
-			}
 			else {
-				SYNC_LOG1("[SYNC] -> unrecognized response -> onUpdateError\n");
-				this->lastErrorMsg = "Unrecognized response: " + response;
-				this->lastHttpCode = req ? req->responseHTTPcode() : 0;
-				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (ERROR) ====\n");
-				if (onUpdateError) onUpdateError();
+				// Any response other than UP_TO_DATE triggers a full download
+				SYNC_LOG1("[SYNC] -> Not UP_TO_DATE (response: '%s'), triggering full download\n", response.c_str());
+				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->downloadFull) ====\n");
+				downloadFull();
 			}
 		},
 		[this](const String &error, AsyncHttpRequest *req) {
@@ -196,78 +151,11 @@ public:
 			this->lastHttpCode = req ? req->responseHTTPcode() : 0;
 			SYNC_LOG1("[SYNC] ==== syncServerDatabase END (NETWORK ERROR) ====\n");
 			if (onUpdateError) onUpdateError();
-		}, SYNC_TIMEOUT
-		);
+		}, SYNC_CHANNEL_NAME
+		,SYNC_TIMEOUT);
 	}
 
 
-
-	bool checkDeltaConflict(const String& serverDelta, const String& clientDelta) {
-		bool b=checkDeltaConflict(serverDelta,clientDelta,0);
-		b= b || checkDeltaConflict(serverDelta,clientDelta,1);
-		return b;
-	}
-	// Helper function to check for overlapping IDs in two CSV delta strings
-	bool checkDeltaConflict(const String& serverDelta, const String& clientDelta,int idColumnIndex) {
-		// NOTE: Change ',' and '0' if your ID is in a different column!
-		// e.g., if ID is the 2nd column, change 0 to 1.
-		// Lambda to extract the ID from a single CSV line
-		char delimiter = ',';
-		auto extractId = [delimiter, idColumnIndex](const String& line) -> String {
-			int currentColumn = 0;
-			int startIndex = 0;
-			for (unsigned int i = 0; i <= line.length(); i++) {
-				if (i == line.length() || line.charAt(i) == delimiter) {
-					if (currentColumn == idColumnIndex) {
-						String id = line.substring(startIndex, i);
-						id.trim(); // Remove any stray \r or spaces
-						return id;
-					}
-					currentColumn++;
-					startIndex = i + 1;
-				}
-			}
-			return "";
-		};
-
-		// 1. Extract all IDs from the Server Delta
-		std::vector<String> serverIds;
-		int s = 0;
-		while (s < serverDelta.length()) {
-			int e = serverDelta.indexOf('\n', s);
-			if (e == -1) e = serverDelta.length();
-
-			String line = serverDelta.substring(s, e);
-			if (line.length() > 0) {
-				String id = extractId(line);
-				if (id.length() > 0) {
-					serverIds.push_back(id);
-				}
-			}
-			s = e + 1;
-		}
-
-		// 2. Check Client Delta IDs against Server IDs
-		s = 0;
-		while (s < clientDelta.length()) {
-			int e = clientDelta.indexOf('\n', s);
-			if (e == -1) e = clientDelta.length();
-
-			String line = clientDelta.substring(s, e);
-			if (line.length() > 0) {
-				String id = extractId(line);
-				if (id.length() > 0) {
-					// Check if this ID exists in the server IDs
-					for (const String& sid : serverIds) {
-						if (sid == id) return true; // CONFLICT FOUND!
-					}
-				}
-			}
-			s = e + 1;
-		}
-
-		return false; // No conflicts
-	}
 
 	void appendRecord(String key, String value) {
 		size_t beforeSize = getLocalSize();
@@ -447,9 +335,7 @@ protected:
 			// 412 = Precondition Failed (Someone else changed the file first)
 			if (this->lastHttpCode == 412) {
 				SYNC_LOG1("[SYNC] CRC Mismatch! Server file changed. Triggering sync to heal...\n");
-				delayedtask.once_ms(3, [this]() {
-					syncServerDatabase();
-				});
+				syncServerDatabase();
 			}
 			// Check for duplicate ID error from server
 			else if (error.indexOf("DUPLICATE_ID") != -1) {
@@ -460,7 +346,7 @@ protected:
 			else {
 				if (onUpdateError) onUpdateError();
 			}
-		}, SYNC_TIMEOUT
+		}, "", SYNC_TIMEOUT
 		);
 	}
 
@@ -517,323 +403,9 @@ protected:
 		);
 	}
 
-	// --- PUSH CLIENT DELTA ---
-	void pushClientDelta() {
-		SYNC_LOG1("[SYNC] pushClientDelta START\n");
-		size_t currentSize = getLocalSize();
-		if (currentSize <= lastSyncedSize) {
-			SYNC_LOG2("[SYNC] pushClientDelta: NO-OP (currentSize=%u <= lastSyncedSize=%u)\n",
-					(unsigned)currentSize, (unsigned)lastSyncedSize);
-			SYNC_LOG1("[SYNC] pushClientDelta END (no-op)\n");
-			return;
-		}
-
-		SYNC_LOG2("[SYNC] pushClientDelta: unpushed bytes range [%u .. %u] = %u bytes. localCRC@pushBase=%s\n",
-				(unsigned)lastSyncedSize, (unsigned)currentSize, (unsigned)(currentSize - lastSyncedSize),
-				getLocalCRC(lastSyncedSize).c_str());
-
-		FileFS* f = SIMPLEFS.openFile(syncFilename.c_str(), "r");
-		if (!f) {
-			SYNC_LOG1("[SYNC] pushClientDelta: FAIL cannot open file for read\n");
-			if (onUpdateError) onUpdateError();
-			return;
-		}
-		SIMPLEFS.seekFile(lastSyncedSize, f);
-		SimpleFileFS* sf = (SimpleFileFS*)f;
-		if (lastSyncedSize > sf->size) {
-			SIMPLEFS.closeFile(f);
-			SYNC_LOG1("[SYNC] pushClientDelta: FAIL seek(%u) out of range file.size=%u\n",
-					(unsigned)lastSyncedSize, (unsigned)sf->size);
-			if (onUpdateError) onUpdateError();
-			return;
-		}
-		size_t deltaLen = currentSize - lastSyncedSize;
-		String clientDeltaStr;
-		clientDeltaStr.reserve(deltaLen + 64);
-		const size_t BLOCK = 1024;
-		uint8_t buf[BLOCK];
-		size_t got = 0;
-		while (got < deltaLen) {
-			size_t toRead = deltaLen - got;
-			if (toRead > BLOCK) toRead = BLOCK;
-			unsigned long r = SIMPLEFS.readFile(buf, toRead, f);
-			if (r == 0) break;
-			clientDeltaStr.concat((const char *)buf, (size_t)r);
-			got += (size_t)r;
-		}
-		SIMPLEFS.closeFile(f);
-		SYNC_LOG2("[SYNC] pushClientDelta: read %u/%u bytes from disk into RAM delta buffer\n",
-				(unsigned)got, (unsigned)deltaLen);
-
-		// Count number of CSV records (lines) being pushed
-		unsigned pushedRecords = 0;
-		{
-			int s = 0;
-			while ((s = clientDeltaStr.indexOf('\n', s)) != -1) { pushedRecords++; s++; }
-			if (clientDeltaStr.length() > 0 &&
-					(clientDeltaStr.charAt(clientDeltaStr.length() - 1) != '\n')) {
-				pushedRecords++;
-			}
-		}
-		SYNC_LOG2("[SYNC] pushClientDelta: payload preview (%u records, %u bytes): first120='%s'\n",
-				pushedRecords, (unsigned)clientDeltaStr.length(),
-				clientDeltaStr.substring(0, 120).c_str());
-
-		String pushUrl = syncUrl + "sync_push_delta?offset=" + String(lastSyncedSize);
-		SYNC_LOG2("[SYNC] pushClientDelta: POST %u bytes -> %s\n",
-				(unsigned)clientDeltaStr.length(), pushUrl.c_str());
-		SYNC_LOG2("[SYNC] POST on %s\n", pushUrl.c_str());
-		AsyncHttpRequest::post(
-				pushUrl,
-				clientDeltaStr,
-				[this, currentSize](const StreamString *content, AsyncHttpRequest *req) {
-			String respStr = content ? content->c_str() : String("");
-			respStr.trim();
-			SYNC_LOG2("[SYNC] pushClientDelta: server response status=OK body(%u bytes)='%s'\n",
-					(unsigned)respStr.length(),
-					respStr.length() > 160 ? (respStr.substring(0, 160) + "...").c_str() : respStr.c_str());
-			lastSyncedSize = currentSize;
-			size_t sz = getLocalSize();
-			SYNC_LOG1("[SYNC] pushClientDelta SUCCESS. fileSize=%u CRC=%s lastSyncedSize=%u\n",
-					(unsigned)sz, getLocalCRC(sz).c_str(), (unsigned)lastSyncedSize);
-			SYNC_LOG1("[SYNC] pushClientDelta END (OK)\n");
-			if (onUpdateSuccess) {
-				SYNC_LOG2("[SYNC] pushClientDelta: firing onUpdateSuccess UI callback\n");
-				onUpdateSuccess();
-			}
-		},
-		[this](const String &error, AsyncHttpRequest *req) {
-			SYNC_LOG1("[SYNC] pushClientDelta: POST FAILED. %s\n", error.c_str());
-			SYNC_LOG2("[SYNC] pushClientDelta: local state unchanged. lastSyncedSize=%u currentSize=%u\n",
-					(unsigned)lastSyncedSize, (unsigned)getLocalSize());
-			this->lastErrorMsg = error;
-			this->lastHttpCode = req ? req->responseHTTPcode() : 0;
-			SYNC_LOG1("[SYNC] pushClientDelta END (ERROR)\n");
-			if (onUpdateError) onUpdateError();
-		}, SYNC_TIMEOUT
-		);
-	}
-
-	// --- RAM-SWAP MERGE (Pull-then-Push for concurrent appends)
-	void performMerge(size_t baseSize, size_t serverTotalSize, size_t clientTotalSize) {
-		SYNC_LOG1("[SYNC] performMerge START (pull then push)\n");
-		bool clientHasDelta = (clientTotalSize > baseSize);
-		size_t serverDeltaLen = serverTotalSize - baseSize;
-		SYNC_LOG2("[SYNC] performMerge args: base=%u serverSize=%u serverDelta=%u clientSize=%u clientAppended=%s clientDelta=%u\n",
-				(unsigned)baseSize, (unsigned)serverTotalSize, (unsigned)serverDeltaLen,
-				(unsigned)clientTotalSize,
-				clientHasDelta ? "YES" : "NO",
-						clientHasDelta ? (unsigned)(clientTotalSize - baseSize) : 0u);
-
-		if (onUpdateBusy) onUpdateBusy();
-
-		String clientDeltaStr = "";
-
-		if (clientHasDelta) {
-			FileFS* f = SIMPLEFS.openFile(syncFilename.c_str(), "r");
-			if (!f) {
-				SYNC_LOG1("[SYNC] performMerge: FAIL cannot open source CSV -> fallback to FULL_UPDATE\n");
-				downloadFull();
-				return;
-			}
-			SIMPLEFS.seekFile(baseSize, f);
-			SimpleFileFS* sf = (SimpleFileFS*)f;
-			if (baseSize > sf->size) {
-				SIMPLEFS.closeFile(f);
-				SYNC_LOG1("[SYNC] performMerge: FAIL seek(base=%u) file.size=%u -> fallback FULL_UPDATE\n",
-						(unsigned)baseSize, (unsigned)sf->size);
-				downloadFull();
-				return;
-			}
-			size_t clientDeltaLen = clientTotalSize - baseSize;
-			clientDeltaStr.reserve(clientDeltaLen + 64);
-			const size_t BLOCK = 1024;
-			uint8_t buf[BLOCK];
-			size_t got = 0;
-			while (got < clientDeltaLen) {
-				size_t toRead = clientDeltaLen - got;
-				if (toRead > BLOCK) toRead = BLOCK;
-				unsigned long r = SIMPLEFS.readFile(buf, toRead, f);
-				if (r == 0) break;
-				clientDeltaStr.concat((const char *)buf, (size_t)r);
-				got += (size_t)r;
-			}
-			SIMPLEFS.closeFile(f);
-			unsigned clientRecords = 0;
-			{
-				int s = 0;
-				while ((s = clientDeltaStr.indexOf('\n', s)) != -1) { clientRecords++; s++; }
-				if (clientDeltaStr.length() > 0 && clientDeltaStr.charAt(clientDeltaStr.length() - 1) != '\n')
-					clientRecords++;
-			}
-			SYNC_LOG2("[SYNC] performMerge: SNAPSHOT client delta bytes[%u..%u] %u bytes / %u records read into RAM. preview='%s'\n",
-					(unsigned)baseSize, (unsigned)clientTotalSize,
-					(unsigned)clientDeltaStr.length(), clientRecords,
-					clientDeltaStr.substring(0, 120).c_str());
-		}
-
-		String deltaUrl = syncUrl + "sync_download_delta?offset=" + String(baseSize);
-		SYNC_LOG2("[SYNC] performMerge: GET server delta bytes[%u..%u] (%u bytes) -> %s\n",
-				(unsigned)baseSize, (unsigned)serverTotalSize, (unsigned)serverDeltaLen, deltaUrl.c_str());
-
-		AsyncHttpRequest::fetch(
-				deltaUrl,
-				[this, baseSize, serverTotalSize, clientTotalSize, clientHasDelta, clientDeltaStr, serverDeltaLen](const StreamString *content, AsyncHttpRequest *req) mutable {
-			String serverDeltaStr = content->c_str();
-			unsigned serverRecords = 0;
-			{
-				int s = 0;
-				while ((s = serverDeltaStr.indexOf('\n', s)) != -1) { serverRecords++; s++; }
-				if (serverDeltaStr.length() > 0 && serverDeltaStr.charAt(serverDeltaStr.length() - 1) != '\n')
-					serverRecords++;
-			}
-			SYNC_LOG2("[SYNC] performMerge: server delta received %u/%u bytes, %u records. preview='%s'\n",
-					(unsigned)serverDeltaStr.length(), (unsigned)serverDeltaLen, serverRecords,
-					serverDeltaStr.substring(0, 120).c_str());
-			if (serverDeltaStr.length() != serverDeltaLen) {
-				SYNC_LOG1("[SYNC] performMerge: WARNING server payload length mismatch (got %u expected %u); proceeding anyway\n",
-						(unsigned)serverDeltaStr.length(), (unsigned)serverDeltaLen);
-			}
-			if (clientHasDelta && serverDeltaStr.length() > 0 && clientDeltaStr.length() > 0) {
-
-				bool hasConflict = checkDeltaConflict(serverDeltaStr, clientDeltaStr);
-
-				if (hasConflict) {
-					SYNC_LOG1("[SYNC] performMerge: CONFLICT DETECTED! Same ID in client and server deltas. Dropping client delta (Server Wins).\n");
-					clientHasDelta = false;
-					clientDeltaStr = "";
-				} else {
-					SYNC_LOG1("[SYNC] performMerge: No ID conflicts detected. Safe to merge both.\n");
-				}
-			}
-			// Direct in-place merge: open in "r+" to overwrite starting at baseSize without truncating the base
-			{
-				FileFS* dst = SIMPLEFS.openFile(syncFilename.c_str(), "r+");
-				if (!dst) {
-					SYNC_LOG1("[SYNC] performMerge: FAIL cannot open file for r+ -> FULL_UPDATE fallback\n");
-					delayedtask.once_ms(3, [this]() {
-						downloadFull();
-					});
-					return;
-				}
-				SimpleFileFS* sdst = (SimpleFileFS*)dst;
-
-				// Seek to the end of the common base
-				sdst->fileptr.seek(baseSize, SeekSet);
-
-				// Append server delta
-				if (serverDeltaStr.length() > 0) {
-					sdst->fileptr.print(serverDeltaStr);
-					SYNC_LOG2("[SYNC] performMerge: in-place APPEND server delta %u bytes (@offset=%u)\n",
-							(unsigned)serverDeltaStr.length(), (unsigned)baseSize);
-				} else {
-					SYNC_LOG2("[SYNC] performMerge: no server delta to append\n");
-				}
-
-				// Append client delta
-				if (clientHasDelta && clientDeltaStr.length() > 0) {
-					sdst->fileptr.print(clientDeltaStr);
-					SYNC_LOG2("[SYNC] performMerge: in-place APPEND client delta %u bytes (@offset=%u)\n",
-							(unsigned)clientDeltaStr.length(), (unsigned)(baseSize + serverDeltaStr.length()));
-				} else if (clientHasDelta) {
-					SYNC_LOG2("[SYNC] performMerge: clientHasDelta but delta is empty -> skip\n");
-				} else {
-					SYNC_LOG2("[SYNC] performMerge: no client delta to append (server-only case)\n");
-				}
-
-				SIMPLEFS.closeFile(dst);
-			}
-
-			size_t expectedTmpSize = baseSize + serverDeltaStr.length() + (clientHasDelta ? clientDeltaStr.length() : 0);
-			size_t afterSize = getLocalSize();
-			String afterCRC = getLocalCRC(afterSize);
-			lastSyncedSize = serverTotalSize;
-
-			SYNC_LOG1("[SYNC] performMerge: merged file OK. expectedSize=%u finalSize=%u CRC=%s. lastSyncedSize set to serverSize=%u. "
-					"pushed-client-records-still-unpushed=%u bytes\n",
-					(unsigned)expectedTmpSize, (unsigned)afterSize, afterCRC.c_str(), (unsigned)lastSyncedSize,
-					afterSize > lastSyncedSize ? (unsigned)(afterSize - lastSyncedSize) : 0u);
-
-			notifyFileUpdated("performMerge");
-			if (onUpdateSuccess) {
-				SYNC_LOG2("[SYNC] performMerge: firing onUpdateSuccess UI callback\n");
-				onUpdateSuccess();
-			}
-			SYNC_LOG1("[SYNC] performMerge END -> triggering pushClientDelta to publish merged tail\n");
-			delayedtask.once_ms(3, [this]() {
-				pushClientDelta();
-			});
-		},
-		[this, baseSize, serverTotalSize, clientTotalSize](const String &error, AsyncHttpRequest *req) {
-			SYNC_LOG1("[SYNC] performMerge: FAIL fetch server delta bytes[%u..%u] error=%s\n",
-					(unsigned)baseSize, (unsigned)serverTotalSize, error.c_str());
-			SYNC_LOG2("[SYNC] performMerge: local file unchanged. currentSize=%u lastSyncedSize=%u\n",
-					(unsigned)getLocalSize(), (unsigned)lastSyncedSize);
-			this->lastErrorMsg = error;
-			this->lastHttpCode = req ? req->responseHTTPcode() : 0;
-			SYNC_LOG1("[SYNC] performMerge END (NETWORK ERROR)\n");
-			if (onUpdateError) onUpdateError();
-		}, SYNC_TIMEOUT
-		);
-	}
-
 private:
 
 public:
-	// --- DELTA APPEND ---
-	void downloadDelta(/*int newMod, size_t newOffset*/) {
-		size_t beforeSize = getLocalSize();
-		String reqUrl = syncUrl + "sync_download?offset=" + String(beforeSize);
-		SYNC_LOG2("[SYNC] downloadDelta START. beforeSize=%u beforeCRC=%s GET -> %s\n",
-				(unsigned)beforeSize, getLocalCRC(beforeSize).c_str(), reqUrl.c_str());
-
-		if (onUpdateBusy) onUpdateBusy();
-
-		FileFS* f = SIMPLEFS.openFile(syncFilename.c_str(), "a");
-		if (!f) {
-			SYNC_LOG1("[SYNC] downloadDelta: FAIL cannot open file for append\n");
-			if (onUpdateError) onUpdateError();
-			return;
-		}
-		SimpleFileFS* sf = (SimpleFileFS*)f;
-		AsyncHttpRequest::fetchToFile(
-				reqUrl,
-				sf->fileptr,
-				[this, beforeSize, f](const StreamString *content, AsyncHttpRequest *req) {
-			// File is closed automatically by AsyncHttpRequest when done
-			(void)content; // body streamed to file in chunks; no RAM buffer
-			size_t afterSize = getLocalSize();
-			lastSyncedSize = afterSize;
-			SYNC_LOG1("[SYNC] downloadDelta SUCCESS. beforeSize=%u afterSize=%u (+%u bytes) afterCRC=%s lastSyncedSize=%u\n",
-					(unsigned)beforeSize, (unsigned)afterSize, (unsigned)(afterSize - beforeSize),
-					getLocalCRC(afterSize).c_str(),
-					(unsigned)lastSyncedSize);
-			notifyFileUpdated("downloadDelta");
-			if (onUpdateSuccess) {
-				SYNC_LOG2("[SYNC] downloadDelta: firing onUpdateSuccess UI callback\n");
-				onUpdateSuccess();
-			}
-		},
-		[this, beforeSize, f](const String &error, AsyncHttpRequest *req) {
-			// File is closed automatically by AsyncHttpRequest when done
-			SYNC_LOG1("[SYNC] downloadDelta FAILED. beforeSize=%u error=%s\n",
-					(unsigned)beforeSize, error.c_str());
-			this->lastErrorMsg = error;
-			this->lastHttpCode = req ? req->responseHTTPcode() : 0;
-			if (onUpdateError) onUpdateError();
-		}, SYNC_TIMEOUT
-		);
-	}
-
-	/*
-	void parseVersionString(String verStr, int &mod, size_t &offset) {
-		int commaIdx = verStr.indexOf(',');
-		if (commaIdx != -1) {
-			mod = verStr.substring(0, commaIdx).toInt();
-			offset = verStr.substring(commaIdx + 1,verStr.length()).toInt();
-		}
-	}
-	 */
 };
 
 #endif

@@ -3,7 +3,9 @@
 
 #include <rom/crc.h>
 #include <ArduinoJson.h>
+#include <datastruct\GenString.h>
 
+#define BLOCK_SIZE_DEFINE 1024
 
 DynamicJsonDocument parseJSON(String filecontent) {
 	DynamicJsonDocument doc(2500);//JsonDocument doc;
@@ -18,11 +20,11 @@ DynamicJsonDocument parseJSON(String filecontent) {
 String loadFileToString(String filename){	 Serial.println(String()+"loadJSON:: preread :"+"/"+filename);
 	String filecontent=SIMPLEFS.readFileToString(String()+"/"+filename);
 	//	Serial.println(String()+"File "+filename+" content1 :"+filecontent);
-	filecontent=replaceAll(filecontent,"http://","XHTTP");
+		filecontent=replaceAll(filecontent,"http://","XHTTP");
 	//	Serial.println(String()+"File "+filename+" content0 :"+filecontent);	// comment incompatible with url "//"
-	filecontent=removeComments(filecontent);
+		filecontent=removeComments(filecontent);
 	//	Serial.println(String()+"File "+filename+" content-1 :"+filecontent);
-	filecontent=replaceAll(filecontent,"XHTTP","http://");
+		filecontent=replaceAll(filecontent,"XHTTP","http://");
 	if (filecontent.length()==0) {
 		Serial.println(String()+"File "+filename+" content empty.");
 	}
@@ -44,8 +46,8 @@ String getFileCRC(const String &name, size_t limit=0) {
 		snprintf(hex, sizeof(hex), "%08lx", (unsigned long)0);
 		return String(hex);
 	}
-	if(limit==0) limit=f->size;
-	const size_t BLOCK_SIZE = 1024;
+	if(limit==0) limit=((SimpleFileFS*)f)->fileptr.size();
+ 	const size_t BLOCK_SIZE = BLOCK_SIZE_DEFINE;
 	uint8_t buffer[BLOCK_SIZE];
 	uint32_t crc = 0;
 	size_t totalRead = 0;
@@ -75,8 +77,6 @@ Padding with spaces when shrinking leaves garbage that later CRC / size calculat
 No file truncation after a shrink → file size reported by the FS can stay larger than the logical content.
  * */
 
-#define CHUNK 1024
-
 bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset, String newContent) {
 	Serial.println("[SYNC] Spliced IN-PLACE started\n");
 	size_t beforeSize = SIMPLEFS.fileSize(syncFilename.c_str());
@@ -92,7 +92,7 @@ bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset
 
 	if (diff > 0) {
 		// SHIFT RIGHT (Iterate Backwards)
-//		const size_t CHUNK = 512;
+		const size_t CHUNK = BLOCK_SIZE_DEFINE;
 		uint8_t buf[CHUNK+8];
 		size_t bytesToShift = tailSize;
 
@@ -110,12 +110,12 @@ bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset
 		}
 	} else if (diff < 0) {
 		// SHIFT LEFT (Iterate Forwards)
-		const size_t CHUNK = 512;
-		uint8_t buf[CHUNK];
+		const size_t SHIFT_CHUNK = BLOCK_SIZE_DEFINE;
+		uint8_t buf[SHIFT_CHUNK];
 		size_t bytesShifted = 0;
 
 		while (bytesShifted < tailSize) {
-			size_t toRead = (tailSize - bytesShifted > CHUNK) ? CHUNK : (tailSize - bytesShifted);
+			size_t toRead = (tailSize - bytesShifted > SHIFT_CHUNK) ? SHIFT_CHUNK : (tailSize - bytesShifted);
 			size_t readPos = endOffset + bytesShifted;
 			size_t writePos = readPos + diff;
 
@@ -140,7 +140,7 @@ bool spliceFileInPlace(String syncFilename, size_t startOffset, size_t endOffset
 
 	SIMPLEFS.closeFile(f);
 
-	Serial.println("[SYNC] Spliced IN-PLACE OK. Diff: %d bytes.\n", diff);
+	Serial.printf("[SYNC] Spliced IN-PLACE OK. Diff: %d bytes.\n", diff);
 	return true;
 }
 
