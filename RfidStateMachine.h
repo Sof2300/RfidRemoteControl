@@ -126,6 +126,7 @@ public:
 		VBeeper *vbeeper = nullptr;
 		DataManager *dataman = nullptr;
 		bool firsttime=true;
+		String printmessage;
 
 
 		void sendTemporaryMessage(String message){
@@ -304,6 +305,7 @@ public:
 			s.on(EVENT_SAVE_SUCCESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
 				dataman->saveCurrentRfid();
 				writeConfirmFB();
+				printmessage=String()+APP_NAME+" successfully associated ID "+dataman->getCurrentID()+" with tag "+dataman->getCurrentTag()+" !";
 //				sendPermanentMessage(String()+APP_NAME+" associating tag "+dataman->getCurrentTag()+" with ID "+dataman->getCurrentID());
 			}).attachGuard([this](EventSource& e) {
 				if (!dataman->validateGeneratedId(dataman->getCurrentID())) {
@@ -332,7 +334,8 @@ public:
 			});
 			s.on(EVENT_PATCH_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				writeConfirmRfidFB();
-				sendPermanentMessage(String()+APP_NAME+" successfully associated ID "+dataman->getCurrentID()+" with tag "+dataman->getCurrentTag()+" !");
+				if(printmessage.length()>0) sendPermanentMessage(printmessage);
+				printmessage="";
 			});
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB("Sync error");
@@ -431,7 +434,9 @@ public:
 				dataman->eraseCurrentRfid();
 				vbeeper->playSpecial("superhighbeep");
 				rgbled->playColor(LED_ERASE_CONFIRM_COLOR);
-				sendPermanentMessage(String()+APP_NAME+" successfully erased tag "+dataman->getCurrentTag()+" !");
+				//sendPermanentMessage(String()+APP_NAME+" successfully erased tag "+dataman->getCurrentTag()+" !");
+				printmessage=String()+APP_NAME+" successfully erased tag "+dataman->getCurrentTag()+" !";
+
 			});
 		}};
 
