@@ -24,7 +24,7 @@ struct StructuredTag {
 		} else if(id0==ERASE_COMMAND_KEYWORD){
 			Serial.println(String()+"Found ERASE tag :"+id);
 			type=ERASE;
-		} else if(id0=="meta:undo"){
+		} else if(id0==UNDO_COMMAND_KEYWORD){
 			Serial.println(String()+"Found UNDO tag :"+id);
 			type=UNDO;
 		} else if(id0==RFID_UNDO_COMMAND_KEYWORD){
@@ -161,14 +161,8 @@ public:
 			patchInProgress=true;
 			submitModification(pos, pos, line);
 		}
-	}/*
-	void oldset(String tag, String id) {
-		appendRecord(tag, id);
-		Serial.println("RfidDB appended to file: '" + tag + "," + id+"'");
-		ticker.once_ms(500, [this]() {
-			syncServerDatabase();
-		});
-	}*/
+	}
+
 	bool erase(String tag) {
 		String id = findInCSV(tag);
 		if (id.length() == 0) {
@@ -193,13 +187,7 @@ public:
 				""
 		);
 		return true;
-	}/*
-	bool olderase(String tag) {
-		bool removed = removeRecordByKey(tag);
-		if(removed) Serial.println("RfidDB removed tag: " + tag);
-		else Serial.println("RfidDB failed to remove tag: " + tag);
-		return removed;
-	}*/
+	}
 
 
 
@@ -219,7 +207,6 @@ public:
 	// Check if an ID already exists in the database
 	bool idExists(String id) {
 		return getKeyByValue(id).length() > 0;
-
 		/////////////////////////////////////////////////////
 	}
 

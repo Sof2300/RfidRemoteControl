@@ -60,7 +60,7 @@ Superscale operations:
   - `set?id=...` — set/confirm an ID for the scanned tag
   - `set?command=...` — trigger a command on Superscale
   - `json` — read latest command payload (used when attaching commands)
-  - `generateIDGet?block-rfid-id-save` — generate new ID and return JSON with `id` and `block-rfid-id-save` fields
+  - `generateIDGet?disable-rfid-id-save` — generate new ID and return JSON with `id` and `disable-rfid-id-save` fields
   - `save` — save new IDs
 
  

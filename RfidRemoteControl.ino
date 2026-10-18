@@ -1,8 +1,17 @@
 /*
-	prototype:
-		- button : green plug &
-		- speaker:
-		- led: rgb + black
+	Potential issues to fix to improve the code:
+	- no delete in state machine destructor
+	- God classes : DataManager, RFIDDB.H ?
+	- Organize the calls differently
+	- CVS reading value vs key almost the same -> make one
+	- set/erase depend on findInCSV (how so ?)
+	- scattered defines
+	- similar fetch in DataManager, could be organized differently
+	- check why we're using delaywithRGB
+	- get palette out of RGBLed
+	- get SuperscaleRequests out of DataManager
+	- get CVS store out of RemoteFileSync & RfidDB
+
  */
 #include <vector>
 #define ESP32BUILD
@@ -216,10 +225,10 @@ void loop() {
 		//	dataman.foundTag(tag);
 		//		tagwaiting=tag;
 		ts=0;
-	} else dataman.noTagFound();
+	}
 
 	//ts=millis();
-	delayWithRgb(30,4);
+	delayWithRgb(30,1);
 }
 
 bool wificonnectedprev=false, connectionfailedprev=false, connectingprev=false;

@@ -126,8 +126,8 @@ void connectWifi(String ssid, String password) {
 		wificonnected=false;
 		connecting=false;
 		Serial.println(String()+" WiFi status:"+WiFi.status()+" "+wifiStatusString(WiFi.status()));
-		delay(3000);
-		Serial.println(String()+" WiFi status 3sec later :"+WiFi.status()+" "+wifiStatusString(WiFi.status()));
+	//	delay(3000);
+	//	Serial.println(String()+" WiFi status 3sec later :"+WiFi.status()+" "+wifiStatusString(WiFi.status()));
 	},
 	WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED
 	);

@@ -48,7 +48,8 @@ class DataManager {
 	bool eraseMode=false;
 
 	String currentCommand;
-	String blockRfidIdSave;
+	String disableRfidIdSave;
+	String savedLineData, savedLineId, savedLineCommand, savedLineArgument;
 
 	//	AsyncHttpClient httpClient;
 
@@ -59,6 +60,7 @@ public:
 	String statusText;
 
 	String getStatusText(){return statusText;}
+	String getSavedLineCommand(){return savedLineCommand;}
 
 	//	void setVBeeper(VBeeper *beeper){vbeep=beeper;}
 	//	void setRGBLed(RGBLed *led){rgbled=led;}
@@ -67,7 +69,7 @@ public:
 	String getCurrentID(){return currentID;}
 	void fetchSetId() {fetchSetId(currentID);}
 	String getCurrentCommand(){return currentCommand;}
-	String getBlockRfidIdSave(){return blockRfidIdSave;}
+	String getDisableRfidIdSave(){return disableRfidIdSave;}
 	String getLastUndoDescription(){return rfiddb.getLastUndoDescription();}
 	bool canUndo(){return rfiddb.canUndo();}
 
@@ -114,10 +116,7 @@ public:
 	}
 
 
-	void noTagFound(){
 
-
-	}
 
 	void tagFound(String tag){
 		tag.replace(" ","");
@@ -139,7 +138,7 @@ public:
 		String id=rfiddb.getID(tag);
 		currentTag = tag;
 		currentID="";
-		blockRfidIdSave="";
+		disableRfidIdSave="";
 		StructuredTag structag = rfiddb.getLastTag();
 		if(structag.type==StructuredTag::ULTRACOMMAND) {
 			currentCommand="";
@@ -233,8 +232,16 @@ public:
 	}
 
 
+	String getCommandForRequest(String command){
+		if(command.startsWith("@") || command.startsWith("#")) command.remove(0,1);
+		command.replace("\\@", "@");
+		command.replace("\\#", "#");
+		return command;
+	}
+
 	void fetchSetCommand(String command){
-		String requrl=String()+baseUrl+"set?command="+command+"&nohtml=1";
+		command=getCommandForRequest(command);
+		String requrl=String()+baseUrl+"set?command="+urlEncode(command)+"&nohtml=1";
 		requestbusy=true;
 		//		if(vbeep) vbeep->playSpecial("reconnu2");
 		//		if(rgbled) rgbled->playColor(LED_COMMAND_FOUND_COLOR);
@@ -260,22 +267,106 @@ public:
 		, COMM_CHANNEL_NAME);
 	}
 
-	String parseJsonCommand(String json){
-		int idx=json.indexOf(COMMAND_KEYWORD);
-		if(idx<0) return "";
-		//		Serial.println(String()+"parseJsonCommand 1:"+json.substring(idx,json.length()));
-		idx+=String(COMMAND_KEYWORD).length()+1;
-		int idx2=json.indexOf("\"",idx);
-		if(idx2<0) return "";
-		//		Serial.println(String()+"parseJsonCommand 2:"+json.substring(idx2,json.length()));
-		int idx3=json.indexOf("\"",idx2+1);
-		if(idx3<0) return "";
-		//		Serial.println(String()+"parseJsonCommand 3:"+json.substring(idx3,json.length()));
-		return json.substring(idx2+1,idx3);
+	void fetchSaveCommand(String command){
+		command=getCommandForRequest(command);
+		statusText="";
+		String requrl=String()+baseUrl+"save?command="+urlEncode(command)+"&nohtml=1";
+		requestbusy=true;
+		AsyncHttpRequest::fetch(
+				requrl,
+				[this](const StreamString *content, AsyncHttpRequest *req) {
+			Serial.println(String()+"DataManager::fetchSaveCommand success for url:"+req->getUrl());
+			String payload=getPayload(content->c_str());
+			if(isErrorPayload(payload)) {
+				statusText=payload;
+				requestbusy=false;
+				dispatchEventSM(EVENT_SAVE_COMMAND_FAIL);
+			} else {
+				requestbusy=false;
+				dispatchEventSM(EVENT_SAVE_COMMAND_SUCCESS);
+			}
+		},
+		[this](const String &error, AsyncHttpRequest *req) {
+			Serial.println(String()+"fetchSaveCommand failure for url:"+req->getUrl());
+			Serial.printf("Reason: %s\n", error.c_str());
+			statusText=String()+"Superscale not found, error saving command: "+error.c_str();
+			requestbusy=false;
+			dispatchEventSM(EVENT_SAVE_COMMAND_FAIL);
+		}
+		, COMM_CHANNEL_NAME);
+	}
+
+	void fetchCurrentLine(){
+		String requrl=String()+baseUrl+"get?date&id&command&argument";
+		requestbusy=true;
+		AsyncHttpRequest::fetch(
+				requrl,
+				[this](const StreamString *content, AsyncHttpRequest *req) {
+			Serial.println(String()+"DataManager::fetchCurrentLine success for url:"+req->getUrl());
+			String payload=AsyncHttpRequest::getPayload(content->c_str());
+			DynamicJsonDocument doc(1024);
+			DeserializationError error=deserializeJson(doc,payload);
+			if(error) {
+				statusText=String()+"Could not parse current Superscale line: "+error.c_str();
+				requestbusy=false;
+				dispatchEventSM(EVENT_GET_LINE_FAIL);
+				return;
+			}
+			JsonObject line=doc.as<JsonObject>();
+			if(line.isNull() || !line.containsKey("date") || !line.containsKey("id") || !line.containsKey("command") || !line.containsKey("argument")) {
+				statusText="Superscale response did not contain the complete current line";
+				requestbusy=false;
+				dispatchEventSM(EVENT_GET_LINE_FAIL);
+				return;
+			}
+			savedLineData=line["date"] | "";
+			savedLineId=line["id"] | "";
+			savedLineCommand=line["command"] | "";
+			savedLineArgument=line["argument"] | "";
+			statusText="";
+			requestbusy=false;
+			dispatchEventSM(EVENT_GET_LINE_SUCCESS);
+		},
+		[this](const String &error, AsyncHttpRequest *req) {
+			Serial.println(String()+"fetchCurrentLine failure for url:"+req->getUrl());
+			Serial.printf("Reason: %s\n", error.c_str());
+			statusText=String()+"Superscale not found, error reading current line: "+error.c_str();
+			requestbusy=false;
+			dispatchEventSM(EVENT_GET_LINE_FAIL);
+		}
+		, COMM_CHANNEL_NAME);
+	}
+
+	void fetchRestoreLine(){
+		String requrl=String()+baseUrl+"set?date="+urlEncode(savedLineData)+"&id="+urlEncode(savedLineId)+"&command="+urlEncode(savedLineCommand)+"&argument="+urlEncode(savedLineArgument)+"&nohtml=1";
+		requestbusy=true;
+		AsyncHttpRequest::fetch(
+				requrl,
+				[this](const StreamString *content, AsyncHttpRequest *req) {
+			Serial.println(String()+"DataManager::fetchRestoreLine success for url:"+req->getUrl());
+			String payload=getPayload(content->c_str());
+			requestbusy=false;
+			if(payload=="OK") {
+				statusText="";
+				dispatchEventSM(EVENT_RESTORE_LINE_SUCCESS);
+			} else {
+				statusText=String()+"Could not restore current Superscale line: "+payload;
+				dispatchEventSM(EVENT_RESTORE_LINE_FAIL);
+			}
+		},
+		[this](const String &error, AsyncHttpRequest *req) {
+			Serial.println(String()+"fetchRestoreLine failure for url:"+req->getUrl());
+			Serial.printf("Reason: %s\n", error.c_str());
+			statusText=String()+"Superscale not found, error restoring current line: "+error.c_str();
+			requestbusy=false;
+			dispatchEventSM(EVENT_RESTORE_LINE_FAIL);
+		}
+		, COMM_CHANNEL_NAME);
 	}
 
 	void fetchCommand(){
-		String requrl=String()+baseUrl+"json";
+		currentCommand="";
+		String requrl=String()+baseUrl+"get?"+COMMAND_KEYWORD+"&"+DISABLESAVE_KEYWORD+"&"+TRANSIENTTAG_KEYWORD;
 		requestbusy=true;
 		//		if(vbeep) vbeep->playSpecial("reconnu3");
 		//		if(rgbled) rgbled->playColor(LED_COMMAND_FOUND_COLOR);
@@ -284,8 +375,25 @@ public:
 				[this](const StreamString *content, AsyncHttpRequest *req) {
 			Serial.println(String()+"fetchCommand success for url:"+req->getUrl());
 			String payload=AsyncHttpRequest::getPayload(content->c_str());
-			currentCommand=parseJsonCommand(payload);
-			Serial.println(String()+"fetchCommand got command:'"+currentCommand+"'");
+			DynamicJsonDocument doc(1024);
+			DeserializationError error=deserializeJson(doc,payload);
+			if(error) {
+				Serial.println(String()+"fetchCommand JSON parse failed: "+error.c_str());
+			} else {
+				String command=doc[COMMAND_KEYWORD] | "";
+				String disableRfidIdSaveValue=doc[DISABLESAVE_KEYWORD] | "";
+				String transientTagValue=doc[TRANSIENTTAG_KEYWORD] | "";
+				command.replace("@", "\\@");
+				command.replace("#", "\\#");
+				bool validConfig=disableRfidIdSaveValue=="0" || disableRfidIdSaveValue=="1";
+				if(disableRfidIdSaveValue=="0") {
+					validConfig=validConfig && (transientTagValue=="0" || transientTagValue=="1");
+					if(transientTagValue=="1") command="#"+command;
+					else if(transientTagValue=="0") command="@"+command;
+				}
+				currentCommand=(validConfig && command.length()>0) ? command : "";
+			}
+			Serial.println(String()+"fetchCommand got attach command:'"+currentCommand+"'");
 			if(currentCommand.length()>0) {
 				dispatchEventSM(EVENT_GET_COMMAND_SUCCESS);
 			} else dispatchEventSM(EVENT_GET_COMMAND_FAIL);
@@ -304,7 +412,7 @@ public:
 
 
 	void fetchGenerate(){
-		String requrl=String()+baseUrl+"generateIDGet?block-rfid-id-save";
+		String requrl=String()+baseUrl+"generateIDGet?disable-rfid-id-save";
 		requestbusy=true;
 		AsyncHttpRequest::fetch(
 				requrl,
@@ -322,15 +430,15 @@ public:
 				dispatchEventSM(EVENT_GENERATE_FAIL);
 				idset=false;
 			} else {
-				// Extract id and block-rfid-id-save from JSON
+				// Extract id and disable-rfid-id-save from JSON
 				String id = doc["id"] | "";
-				String blockRfidIdSaveValue = doc["block-rfid-id-save"] | "";
+				String disableRfidIdSaveValue = doc["disable-rfid-id-save"] | "";
 
 				if(id.length() > 0) {
 					Serial.println(String()+"DataManager:fetchGenerate id: "+id);
-					Serial.println(String()+"DataManager:fetchGenerate block-rfid-id-save: "+blockRfidIdSaveValue);
+					Serial.println(String()+"DataManager:fetchGenerate disable-rfid-id-save: "+disableRfidIdSaveValue);
 					currentID = id;
-					blockRfidIdSave = blockRfidIdSaveValue;
+					disableRfidIdSave = disableRfidIdSaveValue;
 					idset=true;
 					dispatchEventSM(EVENT_GENERATE_SUCCESS);
 				} else {
@@ -554,17 +662,6 @@ public:
 		}
 		return changed;
 	}
-	/*
-
-	void errorAV(){
-		if(vbeep) vbeep->playSpecial("shortdown");
-		if(rgbled) rgbled->playColor(LED_ERROR_COLOR);
-	}
-	void bigErrorAV(){
-		if(vbeep) vbeep->playSpecial("fail");
-		if(rgbled) rgbled->playColor(LED_BIG_ERROR_COLOR);
-	}
-	 */
 
 };
 
