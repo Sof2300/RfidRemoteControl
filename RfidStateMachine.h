@@ -2,6 +2,7 @@
 #define RFIDSTATEMACHINE_H
 
 #include <queue>
+#include <Ticker.h>
 
 #include <device/Beeper.H>
 #include "RGBLed.h"
@@ -127,6 +128,7 @@ public:
 		DataManager *dataman = nullptr;
 		bool firsttime=true;
 		String printmessage;
+		Ticker recoveryTicker;
 
 		void sendTemporaryMessage(String message){
 			if(!dataman) return;
@@ -141,7 +143,6 @@ public:
 			RfidStateMachine* myrsm = static_cast<RfidStateMachine*>(p);
 			myrsm->applyNetworkUI(*this,{EVENT_WIFI_LOST, EVENT_SYNC_ERROR, EVENT_SYNC_NOSUPERSCALE});
 			myrsm->onEnter("Synced",[this, myrsm]() {
-				//		sendTemporaryMessage(String()+APP_NAME+" synced with superscale !");
 				firsttime=true;
 				myrsm->setCommAvailable(true);
 			});
@@ -149,6 +150,16 @@ public:
 				myrsm->setCommAvailable(false);
 			});
 		};
+
+		int syncAttempts = 0, patchAttempts = 0;
+		static const int MAX_SYNC_ATTEMPTS = 3;
+		static const int MAX_PATCH_ATTEMPTS = 3;
+
+		bool canRetrySync() { return syncAttempts < MAX_SYNC_ATTEMPTS; }
+		bool canRetryPatch() { return patchAttempts < MAX_PATCH_ATTEMPTS; }
+		void scheduleRetry(int delayMs, std::function<void()> action) {
+			recoveryTicker.once_ms(delayMs, action);
+		}
 	private:
 		void applyCommonUI(State& s, const std::vector<String>& exclude = {}) {
 			auto isExcluded = [&](String ev) {
@@ -232,7 +243,7 @@ public:
 				sendPermanentMessage(String()+"Saved on superscale block "+dataman->getCurrentID()+", "+dataman->getCurrentCommand());
 			});
 			s.on(EVENT_SAVE_FAIL, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB(String()+"Failed to save on superscale block "+dataman->getCurrentID()+", "+dataman->getCurrentCommand()+", with error:"+dataman->getStatusText(), true);
+				briefErrorFB(String()+"Failed to save on superscale block with id '"+dataman->getCurrentID()+"', command '"+dataman->getCurrentCommand()+"'. "+dataman->getStatusText(), true);
 			});
 		}};
 
@@ -305,7 +316,11 @@ public:
 				disableRfidIdSave.toLowerCase();
 				//				Serial.println("State machine: disable-rfid-id-save is '" + disableRfidIdSave + "'");
 				return (disableRfidIdSave != "0" && disableRfidIdSave != "false");
+			}).attachAction([this](EventSource& e) {
+				Serial.println(String()+"State machine: Saving current id:"+dataman->getCurrentID()+" with tag:"+dataman->getCurrentTag());
+				dataman->saveCurrentRfid();
 			});
+
 			s.on(EVENT_BUTTON_PRESS, "savingGenerate").attachGuard([this](EventSource& e) {
 				String disableRfidIdSave = dataman->getDisableRfidIdSave();
 				disableRfidIdSave.toLowerCase();
@@ -358,8 +373,65 @@ public:
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB("Sync error");
 			});
-			s.on(EVENT_PATCH_ERROR, "idle").attachAction([this](EventSource& e) {
-				briefErrorFB("Patch error");
+			s.on(EVENT_PATCH_ERROR, "rfiddbrecovery");
+		}};
+
+		////////////////////////
+		// RFID RECOVERY
+		State rfiddbrecovery{"rfiddbrecovery", this, [this](State& s) {
+			s.onEnter([this]() {
+				syncAttempts = 0; patchAttempts = 0;
+				Serial.println("Patch conflict, entering recovery state");
+				rgbled->playColor(LED_RECOVERY_COLOR);
+				sendTemporaryMessage(String()+"File conflict detected, syncing...");
+				syncAttempts++;
+				dataman->startRecovery();
+			});
+			s.onLeave([this]() { recoveryTicker.detach(); });
+			// Sync success: try patch
+			s.on(EVENT_RECOVERY_SYNC_SUCCESS, "rfiddbrecovery").attachAction([this](EventSource& e) {
+				Serial.printf("Sync success (%d/%d), retrying patch\n", syncAttempts, MAX_SYNC_ATTEMPTS);
+				patchAttempts++;
+				recoveryTicker.once_ms(syncAttempts * 1000, [this]() { dataman->retryPendingPatch(); });
+			});
+			// Sync error: retry sync
+			s.on(EVENT_RECOVERY_SYNC_ERROR, "rfiddbrecovery").attachGuard([this](EventSource& e) {
+				return syncAttempts < MAX_SYNC_ATTEMPTS;;
+			}).attachAction([this](EventSource& e) {
+				Serial.printf("Sync error (%d/%d), retrying\n", syncAttempts, MAX_SYNC_ATTEMPTS);
+				recoveryTicker.once_ms(syncAttempts * 1000, [this]() { syncAttempts++;dataman->startRecovery(); });
+			});
+			s.on(EVENT_RECOVERY_SYNC_ERROR, "idle").attachGuard([this](EventSource& e) {
+				return !(syncAttempts < MAX_SYNC_ATTEMPTS);
+			}).attachAction([this](EventSource& e) {
+				Serial.println("Max sync attempts reached, giving up");
+				briefErrorFB("Max sync attempts reached, giving up", true);
+			});
+			// Patch success: done
+			s.on(EVENT_PATCH_SUCCESS, "idle").attachAction([this](EventSource& e) {
+				Serial.println("Recovery patch success");
+				writeConfirmRfidFB();
+				if(printmessage.length()>0) sendPermanentMessage(String()+"Recovery successful:"+printmessage);
+				else sendPermanentMessage(String()+"Recovery successful!");
+				printmessage="";
+			});
+			// Patch error: retry patch
+			s.on(EVENT_PATCH_ERROR, "rfiddbrecovery").attachGuard([this](EventSource& e) {	// PATCH error don't patch again, it sync again first
+				return patchAttempts < MAX_PATCH_ATTEMPTS;;
+			}).attachAction([this](EventSource& e) {		
+				Serial.printf("Patch error (%d/%d), retrying\n", patchAttempts, MAX_PATCH_ATTEMPTS);
+				scheduleRetry(patchAttempts * 1000, [this]() { syncAttempts++;dataman->retryPendingPatch(); });
+			});
+			s.on(EVENT_PATCH_ERROR, "idle").attachGuard([this](EventSource& e) {
+				return !(patchAttempts < MAX_PATCH_ATTEMPTS);
+			}).attachAction([this](EventSource& e) {
+				Serial.println("Max patch attempts reached, giving up");
+				briefErrorFB("Max patch attempts reached, giving up", true);
+			});
+
+			s.on(EVENT_RECOVERY_GONE, "idle").attachAction([this](EventSource& e) {
+				Serial.println("Rfid tag removed by another client");
+				briefErrorFB("Rfid tag was removed by another client", true);
 			});
 		}};
 

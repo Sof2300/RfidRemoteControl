@@ -47,8 +47,19 @@ class RfidDB : public RemoteSyncFile {
 	long syncts=0;
 
 	bool patchInProgress=false;
+	bool recoveryInProgress=false;
 
 	StructuredTag lastTag;
+
+	// --- PENDING PATCH FOR RECOVERY ---
+	struct PendingPatch {
+		bool valid;
+		bool isErase;
+		String tag;
+		String id;
+		String command;
+		PendingPatch() : valid(false), isErase(false), tag(""), id(""), command("") {}
+	} pendingPatch;
 
 	// --- CACHE VARIABLES ---
 	String lastFoundKey = "";
@@ -78,6 +89,7 @@ public:
 	StructuredTag getLastTag(){return lastTag;}
 	bool isBusy(){return busy;}
 	bool isSynced(){return synced;}
+	bool isRecoveryInProgress(){return recoveryInProgress;}
 	void init(String baseUrl, String filename){
 		filename = String("/") + filename;
 		Serial.println(String()+"rfiddb: init load "+filename);
@@ -86,24 +98,45 @@ public:
 			Serial.println("rfiddb: Updating...");
 			busy=true;synced=false;error=false;
 			if(patchInProgress) dispatchEventSM(EVENT_PATCH_INPROGRESS);
+			else if(recoveryInProgress) dispatchEventSM(EVENT_RECOVERY_SYNC_INPROGRESS);
 			else dispatchEventSM(EVENT_SYNC_INPROGRESS);
 		};
 		onUpdateSuccess = [this]() {
 			Serial.println("rfiddb: Update Success!");
 			busy=false; synced=true;error=false;syncts=millis();
 			bool wasPatch=patchInProgress;
+			bool wasRecovery=recoveryInProgress;
 			patchInProgress=false;
+			recoveryInProgress=false;
 			lastFoundKey="";
-			if(wasPatch) dispatchEventSM(EVENT_PATCH_SUCCESS);
+			if(wasRecovery) {
+				// During recovery sync, keep pendingPatch valid for retry
+				dispatchEventSM(EVENT_RECOVERY_SYNC_SUCCESS);
+			}
+			else if(wasPatch) {
+				pendingPatch.valid = false; // Clear pending patch on normal patch success
+				dispatchEventSM(EVENT_PATCH_SUCCESS);
+			}
 			else dispatchEventSM(EVENT_SYNC_SUCCESS);
 		};
 		onUpdateError = [this]() {
 			Serial.println("rfiddb: Update Failed.");
 			busy=false;synced=false;error=true;
 			bool wasPatch=patchInProgress;
+			bool wasRecovery=recoveryInProgress;
 			patchInProgress=false;
+			recoveryInProgress=false;
 			if(!reachableHttpCode(lastHttpCode)) dispatchEventSM(EVENT_SYNC_NOSUPERSCALE);
-			else if(wasPatch) dispatchEventSM(EVENT_PATCH_ERROR);
+			else if(wasPatch) {
+				if(lastHttpCode == 412) {
+					Serial.println("rfiddb: Patch conflict (HTTP 412), keeping pending patch for recovery");
+					// Don't clear pendingPatch - keep it for recovery
+				} else {
+					pendingPatch.valid = false; // Clear pending patch on non-412 errors
+				}
+				dispatchEventSM(EVENT_PATCH_ERROR);
+			}
+			else if(wasRecovery) dispatchEventSM(EVENT_RECOVERY_SYNC_ERROR);
 			else dispatchEventSM(EVENT_SYNC_ERROR);
 		};
 		initSync(baseUrl, filename);
@@ -139,6 +172,13 @@ public:
 			op.endPos = lastFoundEnd;
 			pushUndoOperation(op);
 
+			// Store pending patch for recovery
+			pendingPatch.valid = true;
+			pendingPatch.isErase = false;
+			pendingPatch.tag = tag;
+			pendingPatch.id = id;
+			pendingPatch.command = "";
+
 			patchInProgress=true;
 			submitModification(lastFoundStart, lastFoundEnd, line);
 		} else {
@@ -157,6 +197,13 @@ public:
 			pushUndoOperation(op);
 			Serial.printf("RfidDB: Recorded undo for append tag '%s' -> '%s' (range [%u..%u], len: %u)\n",
 					tag.c_str(), id.c_str(), (unsigned)op.startPos, (unsigned)op.endPos, (unsigned)line.length());
+
+			// Store pending patch for recovery
+			pendingPatch.valid = true;
+			pendingPatch.isErase = false;
+			pendingPatch.tag = tag;
+			pendingPatch.id = id;
+			pendingPatch.command = "";
 
 			patchInProgress=true;
 			submitModification(pos, pos, line);
@@ -179,6 +226,13 @@ public:
 		op.startPos = lastFoundStart;
 		op.endPos = lastFoundEnd;
 		pushUndoOperation(op);
+
+		// Store pending patch for recovery
+		pendingPatch.valid = true;
+		pendingPatch.isErase = true;
+		pendingPatch.tag = tag;
+		pendingPatch.id = "";
+		pendingPatch.command = "";
 
 		patchInProgress=true;
 		submitModification(
@@ -208,6 +262,78 @@ public:
 	bool idExists(String id) {
 		return getKeyByValue(id).length() > 0;
 		/////////////////////////////////////////////////////
+	}
+
+	// --- RECOVERY MECHANISM FUNCTIONS ---
+	void startRecovery() {
+		recoveryInProgress=true;
+		Serial.println("RfidDB: Starting recovery for pending patch");
+		syncServerDatabase();
+	}
+
+	void retryPendingPatch() {
+		Serial.printf("RfidDB: Retry patch\n");
+
+		// Invalidate cache to force re-read
+		lastFoundKey = "";
+		lastFoundValue = "";
+		lastFoundStart = 0;
+		lastFoundEnd = 0;
+
+		if(pendingPatch.isErase) {
+			String id = findInCSV(pendingPatch.tag);
+			if(id.length() == 0) {
+				Serial.println("RfidDB: Tag not found during recovery, may have been removed by another client");
+				pendingPatch.valid = false;
+				dispatchEventSM(EVENT_RECOVERY_GONE);
+				return;
+			}
+
+			UndoOperation op;
+			op.type = UndoOperation::ERASE;
+			op.tag = pendingPatch.tag;
+			op.oldId = id;
+			op.newId = "";
+			op.startPos = lastFoundStart;
+			op.endPos = lastFoundEnd;
+			pushUndoOperation(op);
+
+			patchInProgress=true;
+			submitModification(lastFoundStart, lastFoundEnd, "");
+		} else {
+			String foundId = findInCSV(pendingPatch.tag);
+			String line = pendingPatch.tag + "," + pendingPatch.id + "\n";
+
+			if(foundId.length() > 0) {
+				Serial.println("RfidDB: Recovery - Tag exists, modifying");
+				UndoOperation op;
+				op.type = UndoOperation::SET;
+				op.tag = pendingPatch.tag;
+				op.oldId = foundId;
+				op.newId = pendingPatch.id;
+				op.startPos = lastFoundStart;
+				op.endPos = lastFoundEnd;
+				pushUndoOperation(op);
+
+				patchInProgress=true;
+				submitModification(lastFoundStart, lastFoundEnd, line);
+			} else {
+				Serial.println("RfidDB: Recovery - Tag not found, appending");
+				size_t pos = getLocalSize();
+
+				UndoOperation op;
+				op.type = UndoOperation::SET;
+				op.tag = pendingPatch.tag;
+				op.oldId = "";
+				op.newId = pendingPatch.id;
+				op.startPos = pos;
+				op.endPos = pos + line.length();
+				pushUndoOperation(op);
+
+				patchInProgress=true;
+				submitModification(pos, pos, line);
+			}
+		}
 	}
 
 	// --- UNDO MECHANISM FUNCTIONS ---

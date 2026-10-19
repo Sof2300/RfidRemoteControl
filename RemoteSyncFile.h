@@ -138,11 +138,27 @@ public:
 					onUpdateSuccess();
 				}
 			}
-			else {
-				// Any response other than UP_TO_DATE triggers a full download
-				SYNC_LOG1("[SYNC] -> Not UP_TO_DATE (response: '%s'), triggering full download\n", response.c_str());
+			else if (response == "FULL_UPDATE") {
+				// CRC mismatch -> Client must download full file
+				SYNC_LOG1("[SYNC] -> FULL_UPDATE (CRC mismatch), triggering full download\n");
 				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (->downloadFull) ====\n");
 				downloadFull();
+			}
+			else if (response == "SERVER_BUSY") {
+				// Server is busy, error out
+				SYNC_LOG1("[SYNC] -> SERVER_BUSY, cannot sync\n");
+				this->lastErrorMsg = "SERVER_BUSY";
+				this->lastHttpCode = req ? req->responseHTTPcode() : 0;
+				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (SERVER_BUSY) ====\n");
+				if (onUpdateError) onUpdateError();
+			}
+			else {
+				// Other error responses (missing parameters, not initialized, etc.)
+				SYNC_LOG1("[SYNC] -> Error response: '%s', cannot sync\n", response.c_str());
+				this->lastErrorMsg = response;
+				this->lastHttpCode = req ? req->responseHTTPcode() : 0;
+				SYNC_LOG1("[SYNC] ==== syncServerDatabase END (ERROR) ====\n");
+				if (onUpdateError) onUpdateError();
 			}
 		},
 		[this](const String &error, AsyncHttpRequest *req) {
@@ -307,6 +323,19 @@ protected:
 		AsyncHttpRequest::request("PATCH", reqUrl, content, headers,
 				[this, start, end, content](const StreamString *response, AsyncHttpRequest *req) {
 			Serial.println("[SYNC] PATCH callback ENTER");
+			String responseStr = response->c_str();
+			responseStr.trim();
+			SYNC_LOG2("[SYNC] Server PATCH response: '%s'\n", responseStr.c_str());
+
+			if (responseStr != "OK") {
+				SYNC_LOG1("[SYNC] Server rejected PATCH with response: '%s'\n", responseStr.c_str());
+				this->lastErrorMsg = responseStr;
+				this->lastHttpCode = req ? req->responseHTTPcode() : 0;
+				if (onUpdateError) onUpdateError();
+				Serial.println("[SYNC] PATCH callback EXIT (ERROR)");
+				return;
+			}
+
 			SYNC_LOG1("[SYNC] Server accepted PATCH. Applying locally (range: %u-%u, contentLen: %u)...\n",
 					(unsigned)start, (unsigned)end, (unsigned)content.length());
 			String oldCrc=getFileCRC(syncFilename);
@@ -334,16 +363,39 @@ protected:
 
 			// 412 = Precondition Failed (Someone else changed the file first)
 			if (this->lastHttpCode == 412) {
-				SYNC_LOG1("[SYNC] CRC Mismatch! Server file changed. Triggering sync to heal...\n");
-				syncServerDatabase();
+				if (error.indexOf("SIZE MISMATCH") != -1) {
+					SYNC_LOG1("[SYNC] SIZE MISMATCH! Server file size changed. Dispatching error for recovery...\n");
+					SYNC_LOG1("[SYNC] Details: %s\n", error.c_str());
+				}
+				else if (error.indexOf("CRC MISMATCH") != -1) {
+					SYNC_LOG1("[SYNC] CRC MISMATCH! Server file content changed. Dispatching error for recovery...\n");
+					SYNC_LOG1("[SYNC] Details: %s\n", error.c_str());
+				}
+				else {
+					SYNC_LOG1("[SYNC] Precondition Failed (412)! Server file changed. Dispatching error for recovery...\n");
+					SYNC_LOG1("[SYNC] Details: %s\n", error.c_str());
+				}
+				// Dispatch error event so state machine can start recovery
+				if (onUpdateError) onUpdateError();
 			}
 			// Check for duplicate ID error from server
 			else if (error.indexOf("DUPLICATE_ID") != -1) {
 				SYNC_LOG1("[SYNC] Duplicate ID conflict detected by server. Rejecting operation...\n");
 				if (onDuplicateIdError) onDuplicateIdError();
-				else if (onUpdateError) onUpdateError();
+			}
+			// Check for SERVER_BUSY
+			else if (error.indexOf("SERVER_BUSY") != -1) {
+				SYNC_LOG1("[SYNC] Server is busy. Cannot apply patch.\n");
+				if (onUpdateError) onUpdateError();
+			}
+			// Check for FAILED response (splice operation failed on server)
+			else if (error.indexOf("FAILED") != -1) {
+				SYNC_LOG1("[SYNC] Server splice operation failed. Error: %s\n", error.c_str());
+				if (onUpdateError) onUpdateError();
 			}
 			else {
+				// Dispatch error event for other errors
+				SYNC_LOG1("[SYNC] Generic PATCH error: %s\n", error.c_str());
 				if (onUpdateError) onUpdateError();
 			}
 		}, "", SYNC_TIMEOUT

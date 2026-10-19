@@ -72,6 +72,7 @@ public:
 	String getDisableRfidIdSave(){return disableRfidIdSave;}
 	String getLastUndoDescription(){return rfiddb.getLastUndoDescription();}
 	bool canUndo(){return rfiddb.canUndo();}
+	int getRecoveryAttempts(){return rfiddb.getRecoveryAttempts();}
 
 	// Check if the generated ID already exists in the local database
 	bool validateGeneratedId(String id) {
@@ -95,6 +96,8 @@ public:
 		rfiddb.erase(getCurrentTag());	//will sync automatically
 	}
 	void clearRequestBusy(){requestbusy=false;}
+	void startRecovery(){rfiddb.startRecovery();}
+	void retryPendingPatch(){rfiddb.retryPendingPatch();}
 
 
 	void init(String configfilename, String rfidfilename) {
@@ -489,7 +492,7 @@ public:
 
 		Serial.println(String()+"triggerSave currentID:"+currentID);
 		if (currentID.length() == 0) {
-			statusText="No rfid was scanned to save!";
+			statusText="Cannot save, ID empty on superscale !";
 			Serial.println(statusText);
 			dispatchEventSM(EVENT_SAVE_FAIL);
 			return;
@@ -523,6 +526,7 @@ public:
 			String payload=getPayload(content->c_str());
 			if(isErrorPayload(payload)) {
 				idset=false;
+				statusText="Superscale refuse to save: 1.check there is an id, 2.a non 0 harvest or another command, 3. you connected with the phone at least once to sync superscale time";
 				dispatchEventSM(EVENT_SAVE_FAIL);
 			} else {
 				Serial.println(String()+"DataManager:fetchSave payload: "+payload);

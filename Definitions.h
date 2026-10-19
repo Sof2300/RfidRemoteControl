@@ -74,6 +74,11 @@
 #define EVENT_PATCH_ERROR "PATCH_ERROR"
 #define EVENT_PATCH_SUCCESS "PATCH_SUCCESS"
 
+#define EVENT_RECOVERY_SYNC_INPROGRESS "RECOVERY_SYNC_INPROGRESS"
+#define EVENT_RECOVERY_SYNC_SUCCESS "RECOVERY_SYNC_SUCCESS"
+#define EVENT_RECOVERY_SYNC_ERROR "RECOVERY_SYNC_ERROR"
+#define EVENT_RECOVERY_GONE "RECOVERY_GONE"
+
 // color chart: white is virgin, green is ready, yellow is known rfid, white is new ones, blue is saving
 #define LED_INIT_COLOR "white"
 #define LED_WIFI_CONNECTING_COLOR "yellowpulse"
@@ -112,6 +117,10 @@
 #define LED_RFIDUNDO_BLINKCOLOR "fast-cyanpurplemagenta-pingpong"
 #define LED_RFIDUNDO_BLINKFASTCOLOR "ultra-cyanpurplemagenta-pingpong"
 #define LED_RFIDUNDO_COLOR "lightning-cyanpurplemagenta-pingpong"
+
+#define LED_RECOVERY_COLOR "fastredgreenpulse"
+#define LED_RECOVERY_SUCCESS_COLOR "tempogreen"
+#define LED_RECOVERY_FAIL_COLOR "tempored"
 
 #define LED_CONFIGMODE_COLOR "superfastsaferainbow"
 
