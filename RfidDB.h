@@ -49,6 +49,17 @@ class RfidDB : public RemoteSyncFile {
 	bool patchInProgress=false;
 	bool recoveryInProgress=false;
 
+	// One-shot completion callback for sync() calls (fires on success or error)
+	std::function<void(bool success, String error)> syncCompletionCallback;
+
+	void fireSyncCompletion(bool success) {
+		if(syncCompletionCallback) {
+			auto cb = syncCompletionCallback;
+			syncCompletionCallback = nullptr;
+			cb(success, success ? String("") : lastErrorMsg);
+		}
+	}
+
 	StructuredTag lastTag;
 
 	// --- PENDING PATCH FOR RECOVERY ---
@@ -118,6 +129,7 @@ public:
 				dispatchEventSM(EVENT_PATCH_SUCCESS);
 			}
 			else dispatchEventSM(EVENT_SYNC_SUCCESS);
+			fireSyncCompletion(true);
 		};
 		onUpdateError = [this]() {
 			Serial.println("rfiddb: Update Failed.");
@@ -138,11 +150,20 @@ public:
 			}
 			else if(wasRecovery) dispatchEventSM(EVENT_RECOVERY_SYNC_ERROR);
 			else dispatchEventSM(EVENT_SYNC_ERROR);
+			fireSyncCompletion(false);
 		};
 		initSync(baseUrl, filename);
 	}
 
-	void wifiConnected() {
+	void syncRemoteFile() {
+		syncServerDatabase();
+	}
+
+	// Sync with the server and report the outcome via callback when finished.
+	// The callback runs from the async HTTP context (same as dispatchEventSM),
+	// with success=true on completion and false on any error (error = lastErrorMsg).
+	void sync(std::function<void(bool success, String error)> completion) {
+		syncCompletionCallback = completion;
 		syncServerDatabase();
 	}
 

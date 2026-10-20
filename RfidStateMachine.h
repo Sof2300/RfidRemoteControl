@@ -3,10 +3,8 @@
 
 #include <queue>
 #include <Ticker.h>
-
-#include <device/Beeper.H>
-#include "RGBLed.h"
-#include "DataManager.h"
+#include <device/Beeper.h>
+#include "RGBLed.h"#include "DataManager.h"
 #include "Definitions.h"
 #include "StateMachine.h"
 
@@ -93,7 +91,7 @@ public:
 	// --- WifiConnected ---
 	State stateConnected{"WifiConnected", this, [this](State& s) {
 		s.onEnter([this]() {
-			dataman->wifiConnected();
+			dataman->getRfidDB()->wifiConnected();
 		});
 		applyNetworkUI(s,{EVENT_WIFI_LOST, EVENT_SYNC_ERROR, EVENT_SYNC_NOSUPERSCALE});
 		on("WifiConnected", EVENT_SYNC_SUCCESS, "Synced").attachAction([this](EventSource& e) {
@@ -155,11 +153,6 @@ public:
 		static const int MAX_SYNC_ATTEMPTS = 3;
 		static const int MAX_PATCH_ATTEMPTS = 3;
 
-		bool canRetrySync() { return syncAttempts < MAX_SYNC_ATTEMPTS; }
-		bool canRetryPatch() { return patchAttempts < MAX_PATCH_ATTEMPTS; }
-		void scheduleRetry(int delayMs, std::function<void()> action) {
-			recoveryTicker.once_ms(delayMs, action);
-		}
 	private:
 		void applyCommonUI(State& s, const std::vector<String>& exclude = {}) {
 			auto isExcluded = [&](String ev) {
@@ -183,7 +176,7 @@ public:
 			if (!isExcluded(EVENT_RFID_ERASE)) s.on(EVENT_RFID_ERASE, "erasecommand");
 			if (!isExcluded(EVENT_RFID_UNDO)) s.on(EVENT_RFID_UNDO, "undocommand");
 			if (!isExcluded(EVENT_RFID_RFIDUNDO)) s.on(EVENT_RFID_RFIDUNDO, "rfidundocommand").attachGuard([this](EventSource& e){
-				if(!dataman->canUndo()) {
+				if(!dataman->getRfidDB()->canUndo()) {
 					briefErrorFB("no operation to undo");
 					return false;
 				}
@@ -193,8 +186,6 @@ public:
 			if (!isExcluded(EVENT_RFID_BUSY)) s.on(EVENT_RFID_BUSY,s.name).attachAction([this](EventSource& e){
 				briefErrorFB();
 			});
-
-
 		}
 
 		void briefErrorFB(String error="", bool makeitpermanent=false){
@@ -279,25 +270,26 @@ public:
 			s.onEnter([this]() {
 				vbeeper->playSpecial("reconnu2");
 				rgbled->playColor(LED_GENERATEINPROGRESS_COLOR);
+				dataman->getRfidDB()->syncRemoteFile();		
+			});
+			s.on(EVENT_SYNC_SUCCESS, "generateinprogress").attachAction([this](EventSource& e) {
 				dataman->fetchGenerate();
 			});
+			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
+				briefErrorFB("Sync error during generate operation");
+			});
+
 			s.on(EVENT_GENERATE_SUCCESS, "generateready").attachAction([this](EventSource& e) {
-				// Validate the generated ID before proceeding
 				vbeeper->playSpecial("ok");
 				rgbled->playColor(LED_GENERATEREADY_COLOR);
 			}).attachGuard([this](EventSource& e) {
-				return dataman->validateGeneratedId(dataman->getCurrentID());
+				return !dataman->getRfidDB()->idExists(dataman->getCurrentID());// Validate the generated ID before proceeding
 			});
-
 			s.on(EVENT_GENERATE_SUCCESS, "idle").attachAction([this](EventSource& e) {
-				// Validate the generated ID before proceeding
-				//vbeeper->playSpecial("ok");
-				//rgbled->playColor(LED_GENERATEREADY_COLOR);
 				Serial.println("State machine: Generated ID already exists in database, rejecting.");
-				//dispatchEventSM(EVENT_GENERATEID_INVALID);// Force transition to idle on duplicate ID
-				briefErrorFB(String()+APP_NAME+": Generated ID already exists in database, rejecting!",true);
+				briefErrorFB(String()+"Generated ID already exists in database, rejecting!",true);
 			}).attachGuard([this](EventSource& e) {
-				return !dataman->validateGeneratedId(dataman->getCurrentID());
+				return dataman->getRfidDB()->idExists(dataman->getCurrentID());// Validate the generated ID before proceeding
 			});
 			s.on(EVENT_GENERATE_FAIL, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB("generating ID failed",true);
@@ -318,7 +310,7 @@ public:
 				return (disableRfidIdSave != "0" && disableRfidIdSave != "false");
 			}).attachAction([this](EventSource& e) {
 				Serial.println(String()+"State machine: Saving current id:"+dataman->getCurrentID()+" with tag:"+dataman->getCurrentTag());
-				dataman->saveCurrentRfid();
+				dataman->getRfidDB()->set(dataman->getCurrentTag(), dataman->getCurrentID());
 			});
 
 			s.on(EVENT_BUTTON_PRESS, "savingGenerate").attachGuard([this](EventSource& e) {
@@ -335,15 +327,15 @@ public:
 				dataman->triggerSave();
 			});
 			s.on(EVENT_SAVE_SUCCESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
-				dataman->saveCurrentRfid();
+				dataman->getRfidDB()->set(dataman->getCurrentTag(), dataman->getCurrentID());
 				writeConfirmFB();
 				printmessage=String()+"Successfully associated ID "+dataman->getCurrentID()+" with tag "+dataman->getCurrentTag()+" !";
 				//				sendPermanentMessage(String()+APP_NAME+" associating tag "+dataman->getCurrentTag()+" with ID "+dataman->getCurrentID());
 			}).attachGuard([this](EventSource& e) {
-				return dataman->validateGeneratedId(dataman->getCurrentID());
+				return !dataman->getRfidDB()->idExists(dataman->getCurrentID());
 			});
 			s.on(EVENT_SAVE_SUCCESS, "idle").attachGuard([this](EventSource& e) {
-				return !dataman->validateGeneratedId(dataman->getCurrentID());
+				return dataman->getRfidDB()->idExists(dataman->getCurrentID());
 			}).attachAction([this](EventSource& e) {
 				Serial.println("State machine: Generated ID already exists in database, rejecting.");
 				briefErrorFB("Generated ID already exists in database, rejecting!");
@@ -384,43 +376,45 @@ public:
 				Serial.println("Patch conflict, entering recovery state");
 				rgbled->playColor(LED_RECOVERY_COLOR);
 				sendTemporaryMessage(String()+"File conflict detected, syncing...");
-				syncAttempts++;
-				dataman->startRecovery();
+				dataman->getRfidDB()->startRecovery();
 			});
 			s.onLeave([this]() { recoveryTicker.detach(); });
 			// Sync success: try patch
 			s.on(EVENT_RECOVERY_SYNC_SUCCESS, "rfiddbrecovery").attachAction([this](EventSource& e) {
+				syncAttempts++;
 				Serial.printf("Sync success (%d/%d), retrying patch\n", syncAttempts, MAX_SYNC_ATTEMPTS);
-				patchAttempts++;
-				recoveryTicker.once_ms(syncAttempts * 1000, [this]() { dataman->retryPendingPatch(); });
+				recoveryTicker.once_ms(syncAttempts * 1000, [this]() { dataman->getRfidDB()->retryPendingPatch(); });
 			});
-			// Sync error: retry sync
+			// Sync error: retry sync or give up
 			s.on(EVENT_RECOVERY_SYNC_ERROR, "rfiddbrecovery").attachGuard([this](EventSource& e) {
 				return syncAttempts < MAX_SYNC_ATTEMPTS;;
 			}).attachAction([this](EventSource& e) {
-				Serial.printf("Sync error (%d/%d), retrying\n", syncAttempts, MAX_SYNC_ATTEMPTS);
-				recoveryTicker.once_ms(syncAttempts * 1000, [this]() { syncAttempts++;dataman->startRecovery(); });
+				syncAttempts++;
+				Serial.printf("During recovery sync error (%d/%d), retrying\n", syncAttempts, MAX_SYNC_ATTEMPTS);
+				recoveryTicker.once_ms(syncAttempts * 1000, [this]() { syncAttempts++;dataman->getRfidDB()->startRecovery(); });
 			});
 			s.on(EVENT_RECOVERY_SYNC_ERROR, "idle").attachGuard([this](EventSource& e) {
 				return !(syncAttempts < MAX_SYNC_ATTEMPTS);
 			}).attachAction([this](EventSource& e) {
+				syncAttempts++;
 				Serial.println("Max sync attempts reached, giving up");
 				briefErrorFB("Max sync attempts reached, giving up", true);
 			});
 			// Patch success: done
 			s.on(EVENT_PATCH_SUCCESS, "idle").attachAction([this](EventSource& e) {
+				patchAttempts++;
 				Serial.println("Recovery patch success");
 				writeConfirmRfidFB();
 				if(printmessage.length()>0) sendPermanentMessage(String()+"Recovery successful:"+printmessage);
 				else sendPermanentMessage(String()+"Recovery successful!");
 				printmessage="";
 			});
-			// Patch error: retry patch
+			// Patch error: retry sync & patch again or give up
 			s.on(EVENT_PATCH_ERROR, "rfiddbrecovery").attachGuard([this](EventSource& e) {	// PATCH error don't patch again, it sync again first
 				return patchAttempts < MAX_PATCH_ATTEMPTS;;
 			}).attachAction([this](EventSource& e) {		
 				Serial.printf("Patch error (%d/%d), retrying\n", patchAttempts, MAX_PATCH_ATTEMPTS);
-				scheduleRetry(patchAttempts * 1000, [this]() { syncAttempts++;dataman->retryPendingPatch(); });
+				recoveryTicker.once_ms(patchAttempts * 1000, [this]() {dataman->getRfidDB()->retryPendingPatch(); });
 			});
 			s.on(EVENT_PATCH_ERROR, "idle").attachGuard([this](EventSource& e) {
 				return !(patchAttempts < MAX_PATCH_ATTEMPTS);
@@ -428,7 +422,7 @@ public:
 				Serial.println("Max patch attempts reached, giving up");
 				briefErrorFB("Max patch attempts reached, giving up", true);
 			});
-
+			// Cannot find tag in new file, give up
 			s.on(EVENT_RECOVERY_GONE, "idle").attachAction([this](EventSource& e) {
 				Serial.println("Rfid tag removed by another client");
 				briefErrorFB("Rfid tag was removed by another client", true);
@@ -514,9 +508,17 @@ public:
 			s.onEnter([this]() {
 				vbeeper->playSpecial("reconnu4");
 				rgbled->playColor(LED_ATTACHCOMMAND_BLINKCOLOR);
-				dataman->fetchCommand();
 				requestactive=true;
+				dataman->getRfidDB()->syncRemoteFile();		
 			});
+			s.on(EVENT_SYNC_SUCCESS, "generateinprogress").attachAction([this](EventSource& e) {
+				dataman->fetchCommand();	
+			});
+			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
+				requestactive=false;
+				briefErrorFB("Sync error during attach command operation");
+			});
+
 			applyCommonUI(s,{EVENT_BUTTON_PRESS,EVENT_RFID_UNKNOWN, EVENT_RFID_KNOWN});
 			s.on(EVENT_GET_COMMAND_SUCCESS, nullptr).attachAction([this](EventSource& e) {
 				requestactive=false;
@@ -559,7 +561,7 @@ public:
 		State attachcommandnewrfid{"attachcommandnewrfid", this, [this](State& s) {
 			applyCommonUI(s, {EVENT_BUTTON_PRESS});
 			s.on(EVENT_BUTTON_PRESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
-				dataman->saveCurrentRfid(String()+"command:"+dataman->getCurrentCommand());
+				dataman->getRfidDB()->set(dataman->getCurrentTag(), String()+"command:"+dataman->getCurrentCommand());
 				writeConfirmFB();
 				sendPermanentMessage(String()+"Successfully attached Command "+dataman->getCurrentCommand()+" to tag "+dataman->getCurrentTag()+" !");
 			});
@@ -571,9 +573,15 @@ public:
 			s.onEnter([this]() {
 				vbeeper->playSpecial("siren");
 				rgbled->playColor(LED_ERASE_BLINKCOLOR);
-				sendPermanentMessage(String()+"ERASE super-tag scanned "+dataman->getCurrentTag()+ ": scan non empty tag to erase it");
-				//			sendPermanentMessage(String()+APP_NAME+" erasing tag: scan to erase ");
+				dataman->getRfidDB()->syncRemoteFile();		
 			});
+			s.on(EVENT_SYNC_SUCCESS, "generateinprogress").attachAction([this](EventSource& e) {
+				sendPermanentMessage(String()+"ERASE super-tag scanned "+dataman->getCurrentTag()+ ": scan non empty tag to erase it");	
+			});
+			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
+				briefErrorFB("Sync error during erase operation");
+			});
+			
 			s.on(EVENT_BUTTON_PRESS, nullptr).attachAction([this](EventSource& e) {
 				briefErrorFB();
 				//sendPermanentMessage(String()+"Out of erase mode");
@@ -603,7 +611,7 @@ public:
 			});
 			applyCommonUI(s, {EVENT_BUTTON_PRESS});
 			s.on(EVENT_BUTTON_PRESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
-				dataman->eraseCurrentRfid();
+				dataman->getRfidDB()->erase(dataman->getCurrentTag());
 				vbeeper->playSpecial("superhighbeep");
 				rgbled->playColor(LED_ERASE_CONFIRM_COLOR);
 				//sendPermanentMessage(String()+APP_NAME+" successfully erased tag "+dataman->getCurrentTag()+" !");
@@ -643,18 +651,36 @@ public:
 
 		///////////////////////////////////////////////////
 		// RFID UNDO
+		bool readyForUndo=false;
 		State rfidundocommand{"rfidundocommand", this, [this](State& s) {
 			applyCommonUI(s, {EVENT_BUTTON_PRESS});
 			s.onEnter([this]() {
 				vbeeper->playSpecial("exclamation");
 				rgbled->playColor(LED_RFIDUNDO_BLINKCOLOR);
-				String undoDesc = dataman->getLastUndoDescription();
-				sendPermanentMessage(String()+"Rfid-Undo super-tag scanned "+dataman->getCurrentTag()+ ": press button to undo last rfid action (association/delete)");
+				//dataman->getRfidDB()->syncRemoteFile();		
+				dataman->getRfidDB()->sync([this](bool success, String error) {
+					if (success) {
+						String undoDesc = dataman->getRfidDB()->getLastUndoDescription();
+						sendPermanentMessage(String()+"Rfid-Undo super-tag scanned "+dataman->getCurrentTag()+ ": press button to undo last rfid action :"+undoDesc);
+						readyForUndo = true;
+					} else {
+						dispatchEventSM(EVENT_SYNC_ERROR); // we need a transition
+					}
+				});
 			});
+			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
+				briefErrorFB("Sync error during rfid-undo operation");
+			});
+					
 			s.on(EVENT_BUTTON_PRESS, "rfidundoexecute").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("shortup");
 				rgbled->playColor(LED_RFIDUNDO_BLINKFASTCOLOR);
-			});
+			}).attachGuard([this](EventSource& e) {
+				if (!readyForUndo) {
+					briefErrorFB("Not ready for rfid-undo operation");
+					return false;
+				}
+				return true;
 		}};
 		State rfidundoexecute{"rfidundoexecute", this, [this](State& s) {
 			s.onEnter([this]() {
@@ -663,7 +689,7 @@ public:
 			s.on(EVENT_RFIDUNDO_SUCCESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("superhighbeep");
 				rgbled->playColor(LED_RFIDUNDO_COLOR);
-				sendPermanentMessage(String()+APP_NAME+" rfid-undo successful: "+dataman->getLastUndoDescription()+" undone");
+				sendPermanentMessage(String()+APP_NAME+" rfid-undo successful: "+dataman->getRfidDB()->getLastUndoDescription()+" undone");
 			});
 			s.on(EVENT_RFIDUNDO_FAIL, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB();

@@ -70,14 +70,8 @@ public:
 	void fetchSetId() {fetchSetId(currentID);}
 	String getCurrentCommand(){return currentCommand;}
 	String getDisableRfidIdSave(){return disableRfidIdSave;}
-	String getLastUndoDescription(){return rfiddb.getLastUndoDescription();}
-	bool canUndo(){return rfiddb.canUndo();}
-	int getRecoveryAttempts(){return rfiddb.getRecoveryAttempts();}
 
-	// Check if the generated ID already exists in the local database
-	bool validateGeneratedId(String id) {
-		return !rfiddb.idExists(id);
-	}
+	RfidDB* getRfidDB(){return &rfiddb;}
 
 	String getConfig(String key) {	// --- get a config value by key ---
 		auto it = configMap.find(key);
@@ -86,18 +80,7 @@ public:
 		}
 		return ""; // Return empty string if key is not found
 	}
-	void saveCurrentRfid(String id=""){
-		if(id.length()==0) id=getCurrentID();
-		//requestbusy=true;
-		rfiddb.set(getCurrentTag(), id);	//will sync automatically
-	}
-	void eraseCurrentRfid(){
-		//requestbusy=true;
-		rfiddb.erase(getCurrentTag());	//will sync automatically
-	}
 	void clearRequestBusy(){requestbusy=false;}
-	void startRecovery(){rfiddb.startRecovery();}
-	void retryPendingPatch(){rfiddb.retryPendingPatch();}
 
 
 	void init(String configfilename, String rfidfilename) {
@@ -113,13 +96,6 @@ public:
 		if(baseUrl[baseUrl.length()-1]!='/') baseUrl+="/";
 		rfiddb.init(baseUrl,rfidfilename);
 	}
-
-	void wifiConnected(){
-		rfiddb.wifiConnected();
-	}
-
-
-
 
 	void tagFound(String tag){
 		tag.replace(" ","");

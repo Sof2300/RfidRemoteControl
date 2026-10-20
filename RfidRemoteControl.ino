@@ -21,9 +21,9 @@
 #include <Ticker.h>
 
 #include <device/RFIDReader.h>
-#include <device/Beeper.H>
-#include <FS/SimpleFS.H>
-#include <datastruct/GenString.H>
+#include <device/Beeper.h>
+#include <FS/SimpleFS.h>
+#include <datastruct/GenString.h>
 
 #include "WifiManager.h"
 #include <Button2.h>

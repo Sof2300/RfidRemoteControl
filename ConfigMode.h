@@ -9,8 +9,8 @@
 #include <ArduinoJson.h>
 
 //#include "FileUtils.h"
-#include <FS/SimpleFS.H>
-#include "ResetDetector.H"
+#include <FS/SimpleFS.h>
+#include "ResetDetector.h"
 
 #define CONFIG_MODE_PAGE "edit.html"
 
