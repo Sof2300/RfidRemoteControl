@@ -4,7 +4,8 @@
 #include <queue>
 #include <Ticker.h>
 #include <device/Beeper.h>
-#include "RGBLed.h"#include "DataManager.h"
+#include "RGBLed.h"
+#include "DataManager.h"
 #include "Definitions.h"
 #include "StateMachine.h"
 
@@ -91,11 +92,11 @@ public:
 	// --- WifiConnected ---
 	State stateConnected{"WifiConnected", this, [this](State& s) {
 		s.onEnter([this]() {
-			dataman->getRfidDB()->wifiConnected();
+			dataman->getRfidDB()->syncRemoteFile();
 		});
 		applyNetworkUI(s,{EVENT_WIFI_LOST, EVENT_SYNC_ERROR, EVENT_SYNC_NOSUPERSCALE});
 		on("WifiConnected", EVENT_SYNC_SUCCESS, "Synced").attachAction([this](EventSource& e) {
-			//			Serial.println("FSM: WifiConnected: EVENT_SYNC_SUCCESS! Moving to Synced.");
+						Serial.println("FSM: WifiConnected: EVENT_SYNC_SUCCESS! Moving to Synced.");
 			vbeeper->playSpecial("bungee");
 			rgbled->playColor(LED_SYNCED_COLOR);
 		});
@@ -272,7 +273,8 @@ public:
 				rgbled->playColor(LED_GENERATEINPROGRESS_COLOR);
 				dataman->getRfidDB()->syncRemoteFile();		
 			});
-			s.on(EVENT_SYNC_SUCCESS, "generateinprogress").attachAction([this](EventSource& e) {
+			s.on(EVENT_SYNC_SUCCESS, nullptr).attachAction([this](EventSource& e) {
+				vbeeper->playSpecial("ok");
 				dataman->fetchGenerate();
 			});
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
@@ -365,9 +367,14 @@ public:
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB("Sync error");
 			});
+			s.on(EVENT_PATCH_ERROR, "idle").attachAction([this](EventSource& e) {
+				briefErrorFB("Patch error");
+			});
+#ifdef RFID_RECOVERY_ENABLED
 			s.on(EVENT_PATCH_ERROR, "rfiddbrecovery");
+#endif
 		}};
-
+#ifdef RFID_RECOVERY_ENABLED
 		////////////////////////
 		// RFID RECOVERY
 		State rfiddbrecovery{"rfiddbrecovery", this, [this](State& s) {
@@ -428,7 +435,7 @@ public:
 				briefErrorFB("Rfid tag was removed by another client", true);
 			});
 		}};
-
+#endif
 		///////////////////////////////////////////////////
 		// COMMAND SET IN PROGRESS: set command on superscale : Classic tag
 		State commandinprogress{"commandinprogress", this, [this](State& s) {
@@ -436,7 +443,7 @@ public:
 				vbeeper->playSpecial("reconnu3");
 				rgbled->playColor(LED_COMMANDINPROGRESS_COLOR);
 				dataman->fetchSetCommand(dataman->getCurrentCommand());
-				sendPermanentMessage(String()+"Command set tag scanned "+dataman->getCurrentTag()+ ": Command set to "+dataman->getCurrentCommand()+" !");
+				sendPermanentMessage(String()+"Command classic tag scanned "+dataman->getCurrentTag()+ ": Command set to "+dataman->getCurrentCommand()+" !");
 			});
 			s.on(EVENT_SET_COMMAND_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("ok");
@@ -446,7 +453,7 @@ public:
 				briefErrorFB();
 			});
 		}};
-		// COMMAND SET IN PROGRESS: set command on superscale : Classic-save tag
+		// COMMAND SET IN PROGRESS: set command on superscale : set&save @ tag
 		State commandsaveinprogress{"commandsaveinprogress", this, [this](State& s) {
 			s.onEnter([this]() {
 				vbeeper->playSpecial("reconnu3");
@@ -455,13 +462,14 @@ public:
 			});
 			s.on(EVENT_SAVE_COMMAND_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				writeConfirmFB();
-				sendPermanentMessage(String()+"Command set&save tag scanned "+dataman->getCurrentTag()+ ": Command set to "+dataman->getCurrentCommand()+" and saved with ID "+dataman->getCurrentID()+" !");
+				sendPermanentMessage(String()+"Command set&save @ tag scanned "+dataman->getCurrentTag()+ ": Command set to "+dataman->getCurrentCommand()+" and saved with ID "+dataman->getCurrentID()+" !");
 			});
 			s.on(EVENT_SAVE_COMMAND_FAIL, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB(dataman->getStatusText());
 			});
 		}};
-		// COMMAND SET IN PROGRESS: set command on superscale : # transient tag
+
+		// COMMAND SET IN PROGRESS: set command on superscale : transient # tag
 		State commandtaggetinprogress{"commandtaggetinprogress", this, [this](State& s) {
 			s.onEnter([this]() {
 				vbeeper->playSpecial("reconnu3");
@@ -473,16 +481,20 @@ public:
 				briefErrorFB(dataman->getStatusText());
 			});
 		}};
+		bool savesuccess=false;
 		State commandtagsaveinprogress{"commandtagsaveinprogress", this, [this](State& s) {
 			s.onEnter([this]() {
 				rgbled->playColor(LED_SAVEINPROGRESS_COLOR);
+				savesuccess=false;
 				dataman->fetchSaveCommand(dataman->getCurrentCommand());
 			});
 			s.on(EVENT_SAVE_COMMAND_SUCCESS, "commandtagrestoreinprogress").attachAction([this](EventSource& e) {
 				writeConfirmFB();
+				savesuccess=true;
 			});
-			s.on(EVENT_SAVE_COMMAND_FAIL, "idle").attachAction([this](EventSource& e) {
+			s.on(EVENT_SAVE_COMMAND_FAIL, "commandtagrestoreinprogress").attachAction([this](EventSource& e) {
 				briefErrorFB(dataman->getStatusText());
+				savesuccess=false;
 			});
 		}};
 		State commandtagrestoreinprogress{"commandtagrestoreinprogress", this, [this](State& s) {
@@ -493,7 +505,8 @@ public:
 			s.on(EVENT_RESTORE_LINE_SUCCESS, "idle").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("ok");
 				rgbled->playColor(LED_COMMAND_COLOR);
-				sendPermanentMessage(String()+"Command transient save tag scanned "+dataman->getCurrentTag()+ ": Command set to "+dataman->getCurrentCommand()+", saved with ID "+dataman->getCurrentID()+", and restored back to "+dataman->getSavedLineCommand()+"!");
+				if (savesuccess) sendPermanentMessage(String()+"Command transient # tag scanned "+dataman->getCurrentTag()+ ": Command set to "+dataman->getCurrentCommand()+", saved with ID "+dataman->getCurrentID()+", and restored back to "+dataman->getSavedLineCommand()+"!");
+				else sendPermanentMessage(String()+"Command transient # tag scanned "+dataman->getCurrentTag()+ ": Command set to "+dataman->getCurrentCommand()+", but failed to save with ID "+dataman->getCurrentID()+", restored back to "+dataman->getSavedLineCommand()+"!");
 				//			sendPermanentMessage(String()+" temporarily ran command from tag and restored previous Superscale line");
 			});
 			s.on(EVENT_RESTORE_LINE_FAIL, "idle").attachAction([this](EventSource& e) {
@@ -511,11 +524,11 @@ public:
 				requestactive=true;
 				dataman->getRfidDB()->syncRemoteFile();		
 			});
-			s.on(EVENT_SYNC_SUCCESS, "generateinprogress").attachAction([this](EventSource& e) {
+			s.onSelfInternal(EVENT_SYNC_SUCCESS).attachAction([this](EventSource& e) {
+				vbeeper->playSpecial("ok");
 				dataman->fetchCommand();	
 			});
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
-				requestactive=false;
 				briefErrorFB("Sync error during attach command operation");
 			});
 
@@ -528,7 +541,6 @@ public:
 				//	sendPermanentMessage(String()+APP_NAME+" press button to attach command "+dataman->getCurrentCommand()+" to tag "+dataman->getCurrentTag());
 			});
 			s.on(EVENT_GET_COMMAND_FAIL, "idle").attachAction([this](EventSource& e) {
-				requestactive=false;
 				briefErrorFB();
 				sendTemporaryMessage(String()+"Could not get command from superscale");
 			});
@@ -579,6 +591,7 @@ public:
 				sendPermanentMessage(String()+"ERASE super-tag scanned "+dataman->getCurrentTag()+ ": scan non empty tag to erase it");	
 			});
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
+				vbeeper->playSpecial("ok");
 				briefErrorFB("Sync error during erase operation");
 			});
 			
@@ -653,25 +666,33 @@ public:
 		// RFID UNDO
 		bool readyForUndo=false;
 		State rfidundocommand{"rfidundocommand", this, [this](State& s) {
-			applyCommonUI(s, {EVENT_BUTTON_PRESS});
+			applyCommonUI(s, {EVENT_BUTTON_PRESS, EVENT_RFID_RFIDUNDO});
 			s.onEnter([this]() {
 				vbeeper->playSpecial("exclamation");
+				readyForUndo=false;
 				rgbled->playColor(LED_RFIDUNDO_BLINKCOLOR);
-				//dataman->getRfidDB()->syncRemoteFile();		
-				dataman->getRfidDB()->sync([this](bool success, String error) {
+				dataman->getRfidDB()->syncRemoteFile();		
+		/*		dataman->getRfidDB()->sync([this](bool success, String error) {
 					if (success) {
+						readyForUndo=false;
+						vbeeper->playSpecial("ok");
 						String undoDesc = dataman->getRfidDB()->getLastUndoDescription();
 						sendPermanentMessage(String()+"Rfid-Undo super-tag scanned "+dataman->getCurrentTag()+ ": press button to undo last rfid action :"+undoDesc);
-						readyForUndo = true;
-					} else {
-						dispatchEventSM(EVENT_SYNC_ERROR); // we need a transition
-					}
-				});
+					} else dispatchEventSM(EVENT_SYNC_ERROR); // we need a transition
+				});*/
+			});
+			s.onSelfInternal(EVENT_SYNC_SUCCESS).attachAction([this](EventSource& e) {
+				readyForUndo=true;
+				vbeeper->playSpecial("ok");
+				String undoDesc = dataman->getRfidDB()->getLastUndoDescription();
+				sendPermanentMessage(String()+"Rfid-Undo super-tag scanned "+dataman->getCurrentTag()+ ": press button to undo last rfid action :"+undoDesc);
 			});
 			s.on(EVENT_SYNC_ERROR, "idle").attachAction([this](EventSource& e) {
 				briefErrorFB("Sync error during rfid-undo operation");
 			});
-					
+			s.on(EVENT_RFID_RFIDUNDO, "idle").attachAction([this](EventSource& e) {
+				briefErrorFB("Rfid-Undo super-tag scanned twice, cancelling operation");
+			});			
 			s.on(EVENT_BUTTON_PRESS, "rfidundoexecute").attachAction([this](EventSource& e) {
 				vbeeper->playSpecial("shortup");
 				rgbled->playColor(LED_RFIDUNDO_BLINKFASTCOLOR);
@@ -681,17 +702,23 @@ public:
 					return false;
 				}
 				return true;
+			});
 		}};
+		String undoDesc ;
 		State rfidundoexecute{"rfidundoexecute", this, [this](State& s) {
 			s.onEnter([this]() {
+				undoDesc = dataman->getRfidDB()->getLastUndoDescription();
+				Serial.println(String()+"State machine: Executing rfid-undo for operation: '"+undoDesc+"'");
 				dataman->fetchRfidUndo();
 			});
-			s.on(EVENT_RFIDUNDO_SUCCESS, "rfiddbsyncing").attachAction([this](EventSource& e) {
+			s.on(EVENT_RFIDUNDO_SUCCESS, "idle").attachAction([this](EventSource& e) {	
 				vbeeper->playSpecial("superhighbeep");
 				rgbled->playColor(LED_RFIDUNDO_COLOR);
-				sendPermanentMessage(String()+APP_NAME+" rfid-undo successful: "+dataman->getRfidDB()->getLastUndoDescription()+" undone");
+				sendPermanentMessage(String()+APP_NAME+" rfid-undo successful: '"+undoDesc+"' undone");
+				Serial.println(String()+"State machine: Rfid-undo successful for operation: '"+undoDesc+"'");
 			});
 			s.on(EVENT_RFIDUNDO_FAIL, "idle").attachAction([this](EventSource& e) {
+				Serial.println(String()+"State machine: Rfid-undo failed for operation: '"+undoDesc+"'");
 				briefErrorFB();
 			});
 		}};

@@ -6,6 +6,7 @@
 #include <string.h>
 #include <functional>
 
+// Define STATE_MACHINE_DEBUG before including this file to enable detailed diagnostics.
 class StateMachine;
 class State;
 
@@ -45,7 +46,10 @@ public:
 		return true;
 	}
 	virtual void action(EventSource* source) {
-		Serial.println(String()+"STATE MACHINE: Transition to state '"+targetName+"' with event '"+eventName+"'");
+		// Transition execution remains visible even when detailed diagnostics are disabled.
+		Serial.print(String()+"STATE MACHINE: execute transition for event '"+eventName+"'");
+		if (targetName) Serial.println(String()+"' -> '"+targetName+"'");
+		else Serial.println("' (no state change)");
 
 		if (_actionFunc) _actionFunc(source ? *source : EmptyEvent);
 	}
@@ -77,12 +81,21 @@ public:
 	Transition& on(const char* eventName, const char* targetName = nullptr) {
 		return *new Transition(this, eventName, targetName);
 	}
+	// A null target handles the event without leaving or re-entering this state.
+	Transition& onSelfInternal(const char* eventName) {
+		return on(eventName, nullptr);
+	}
+	// Targeting this state's name forces an exit and re-entry.
+	Transition& onSelfExternal(const char* eventName) {
+		return on(eventName, name);
+	}
 	void onEnter(std::function<void()> action) { _enterFunc = action; }
 	void onLeave(std::function<void()> action) { _leaveFunc = action; }
 };
 
 class StateMachine : public State {
 public:
+
 	State* children;
 	State* activeChild;
 	const char* initChildName;
@@ -113,25 +126,75 @@ public:
 	}
 
 	void dispatch(const char* eventName, EventSource* source = nullptr) {
+#ifdef STATE_MACHINE_DEBUG
+		Serial.println(String()+"STATE MACHINE: dispatch event '"+eventName+"'");
+		traceActiveConfiguration();
+#endif
+
 		State* curr = this;
 
 		while (curr->isMachine() && ((StateMachine*)curr)->activeChild) {
 			curr = ((StateMachine*)curr)->activeChild;
 		}
 
+#ifdef STATE_MACHINE_DEBUG
+		bool isActiveLeaf = true;
+#endif
 		while (curr) {
+#ifdef STATE_MACHINE_DEBUG
+			Serial.println(String()+"STATE MACHINE: checking "+(isActiveLeaf ? "active leaf" : "active ancestor")+" '"+curr->name+"'");
+			bool foundEventTransition = false;
+#endif
 			for (Transition* t = curr->transitions; t; t = t->next) {
-				if (strcmp(t->eventName, eventName) == 0 && t->guard(source)) {
+				if (strcmp(t->eventName, eventName) == 0) {
+#ifdef STATE_MACHINE_DEBUG
+					foundEventTransition = true;
+					Serial.println(String()+"STATE MACHINE: event matches transition declared on '"+curr->name+"'");
+#endif
+					if (!t->guard(source)) {
+#ifdef STATE_MACHINE_DEBUG
+						Serial.println("STATE MACHINE: transition guard rejected event");
+#endif
+						continue;
+					}
+
+#ifdef STATE_MACHINE_DEBUG
+					Serial.println("STATE MACHINE: transition guard accepted event");
+#endif
 					t->action(source);
 					if (t->targetName) {
 						State* target = findState(t->targetName);
-						if (target) doTransition(curr, target);
+						if (target) {
+#ifdef STATE_MACHINE_DEBUG
+							Serial.println(String()+"STATE MACHINE: applying transition from '"+curr->name+"' to '"+target->name+"'");
+#endif
+							doTransition(curr, target);
+						} else {
+#ifdef STATE_MACHINE_DEBUG
+							Serial.println(String()+"STATE MACHINE ERROR: transition target not found: '"+t->targetName+"'");
+#endif
+						}
+					} else {
+#ifdef STATE_MACHINE_DEBUG
+						Serial.println(String()+"STATE MACHINE: internal transition on '"+curr->name+"' (no state change)");
+#endif
 					}
 					return;
 				}
 			}
+#ifdef STATE_MACHINE_DEBUG
+			if (!foundEventTransition) {
+				Serial.println(String()+"STATE MACHINE: no matching transition on '"+curr->name+"'");
+			}
+#endif
 			curr = (State*)curr->parent;
+#ifdef STATE_MACHINE_DEBUG
+			isActiveLeaf = false;
+#endif
 		}
+#ifdef STATE_MACHINE_DEBUG
+		Serial.println(String()+"STATE MACHINE: event '"+eventName+"' was not handled");
+#endif
 	}
 	void dispatch(String eventName) { dispatch(eventName.c_str()); }
 
@@ -152,8 +215,10 @@ public:
 		State* sourceState = findState(sourceName);
 
 		if (!sourceState) {
+#ifdef STATE_MACHINE_DEBUG
 			Serial.print("STATE MACHINE ERROR: Could not find source state: ");
 			Serial.println(sourceName);
+#endif
 			sourceState = this; // Safe fallback to prevent crash
 		}
 
@@ -165,8 +230,10 @@ public:
         if (targetState) {
             targetState->_enterFunc = action;
         } else {
+#ifdef STATE_MACHINE_DEBUG
             Serial.print("STATE MACHINE ERROR: onEnter could not find state: ");
             Serial.println(stateName);
+#endif
         }
     }
 
@@ -175,12 +242,36 @@ public:
         if (targetState) {
             targetState->_leaveFunc = action;
         } else {
+#ifdef STATE_MACHINE_DEBUG
             Serial.print("STATE MACHINE ERROR: onLeave could not find state: ");
             Serial.println(stateName);
+#endif
         }
     }
 
 private:
+#ifdef STATE_MACHINE_DEBUG
+	void traceActiveConfiguration() {
+		Serial.print("STATE MACHINE: active configuration: ");
+		State* curr = this;
+		bool first = true;
+		while (curr) {
+			if (!first) Serial.print(" -> ");
+			Serial.print(curr->name);
+			first = false;
+			if (!curr->isMachine()) break;
+
+			StateMachine* machine = (StateMachine*)curr;
+			if (!machine->activeChild) {
+				Serial.print(" [no active child]");
+				break;
+			}
+			curr = machine->activeChild;
+		}
+		Serial.println();
+	}
+#endif
+
 	void doTransition(State* sourceLeaf, State* target) {
 		State* pathSrc[10]; int depthSrc = 0;
 		State* pathTarg[10]; int depthTarg = 0;

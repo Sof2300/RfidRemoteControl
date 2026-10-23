@@ -323,14 +323,18 @@ protected:
 		AsyncHttpRequest::request("PATCH", reqUrl, content, headers,
 				[this, start, end, content](const StreamString *response, AsyncHttpRequest *req) {
 			Serial.println("[SYNC] PATCH callback ENTER");
-			String responseStr = response->c_str();
+			String responseStr = response ? response->c_str() : "";
 			responseStr.trim();
-			SYNC_LOG2("[SYNC] Server PATCH response: '%s'\n", responseStr.c_str());
+			this->lastHttpCode = req ? req->responseHTTPcode() : 0;
+			this->lastErrorMsg = "";
+			SYNC_LOG1("[SYNC] PATCH response HTTP %d, body: '%s'\n",
+					this->lastHttpCode, responseStr.c_str());
 
-			if (responseStr != "OK") {
-				SYNC_LOG1("[SYNC] Server rejected PATCH with response: '%s'\n", responseStr.c_str());
-				this->lastErrorMsg = responseStr;
-				this->lastHttpCode = req ? req->responseHTTPcode() : 0;
+			if (this->lastHttpCode < 200 || this->lastHttpCode >= 300) {
+				SYNC_LOG1("[SYNC] PATCH returned non-success HTTP status: %d\n", this->lastHttpCode);
+				this->lastErrorMsg = responseStr.length() > 0
+						? responseStr
+						: String("Unexpected HTTP status ") + this->lastHttpCode;
 				if (onUpdateError) onUpdateError();
 				Serial.println("[SYNC] PATCH callback EXIT (ERROR)");
 				return;

@@ -1,11 +1,11 @@
 USER MANUAL
 
 0/ Config Mode
-Press 3 times reset button not too slow, not too fast, to get into config mode, connect to the Esp32-Setup wifi and open this url http://192.168.4.1. Fill your ssid/password and the ip of superscale and save it (or edit these info on the config.json file directly)
+Press 3 times reset button not too slow, not too fast, to get into config mode, connect to the Esp32-Setup wifi and open this url http://192.168.4.1. Fill your ssid/password, ip of superscale, mdns name and save it (or edit these info on the config.json file directly). Restart, connect to the new network, use http://superscale.local (or the mdns name you've chosen), the page opens will show the ip on the top right, preferable to use as url because faster.
 
 1/ Startup : connect & sync: turn on
 -> red: no wifi or no superscale => turn router on & turn superscale on, 
--> green: found & synced with superscale
+-> green: found & synced with superscale, good to go
 
 (blink=wait for tag, fast blink=wait for button, ultrafast blink=communicating with superscale)
 2/ Scan an ID RFID tag 
@@ -13,28 +13,39 @@ Press 3 times reset button not too slow, not too fast, to get into config mode, 
 -> red, then green: could not set ID, maybe superscale not available or network reception sucks
 
 3/ Scan a Command RFID tag 
--> yellow/orange: superscale has been set with the Command value of the tag
+-> yellow/orange: 3 types of tages: regular, transient "#", and set&save "@". 
+ - With regular, superscale Command value has been set with the value on the tag. 
+ - With transient #, superscale Command is changed to the value of tag, then saved, then the initial command is restored. 
+ - With the set&save "@", superscale Command is changed to the value of tag, then saved, but initial command is not restored.
 -> red, then green: could not set Command, maybe superscale not available or network reception sucks
 
 4/ Scan an empty RFID tag 
 -> white: superscale has generated a new ID (if not disabled) to associate with this RFID tag. On button press, the association is saved and "blockdate=today()" is saved on superscale for that block (unless disabled through UI)
 -> red, then green: could not generate a new ID, probably because current ID is not set on superscale to generate from
 
-5/ Scan "Attach Command" RFID tag
--> purple: current Command on superscale will be attached to the next scanned tag
+5a/ Scan "Attach Command" RFID tag
+-> purple: current Command on superscale will be attached to the next scanned new tag. Scan again "Attach Command" to cancel. Scan a new tag to attach current Command. Press button to confirm and save. The type of Command tag saved depends on two UI checkboxes, "disable save on rfid/id association" & "transient":
+- disable save => classic tag 
+- transient + no disable save => transient "#"
+- not transient + no disable save => set&save "@"
+-> red, then green: could not set Command. If Command is not empty, maybe superscale is not available or network reception sucks.
 
 6/ Scan "Erase" RFID tag
--> cyan : next scanned tag will be erased on button confirmation
+-> cyan : next scanned tag will be erased on button confirmation. Scan again "Erase" rfid tag to cancel.
 
 7/ Scan "Undo" RFID tag
 -> rainbow: on button press, last superscale operation will be cancelled
 
 8/ Scan "RFID-UNDO" RFID tag
--> magenta/rainbow: on button press, last rfid operation (attach/erase) will be cancelled
+-> magenta/rainbow: on button press, last rfid operation (attach/erase) will be cancelled. Scan again "RFID-UNDO" rfid tag to cancel.
 -> red: no operation to undo
 
 N.B: If an ID exist on the ID-RFID association, but not saved as block on superscale, it might happen that the new generated ID is this ID and attempting to save will be rejected because the association exist already. In that case, erase the tag or save the block on superscale.
 
+
+
+
+----------------------------
 
 combining distinct hues with controlled lightness/saturation differences improves distinguishability and visual comfort.
 https://colorbrewer2.org/#type=qualitative&scheme=Set3&n=9

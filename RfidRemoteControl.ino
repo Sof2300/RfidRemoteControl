@@ -161,10 +161,10 @@ void setup() {
 	// then load the distant file from superscale too
 	dataman.init(CONFIGFILE,RFIDFILE);
 
-	String ssid=dataman.getConfig(SSID_KEY);
-	String password=dataman.getConfig(PASSWORD_KEY);
+	String ssid = dataman.getConfig(SSID_KEY);
+	String password = dataman.getConfig(PASSWORD_KEY);
 	setupReconnect();
-	connectWifi(ssid,password);
+	connectWifi(ssid, password);
 
 	reader.init(SS_PIN,RST_PIN,IRQ_PIN);
 	//savebutton.setDebounceTime(30);
