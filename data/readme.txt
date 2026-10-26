@@ -1,8 +1,8 @@
 USER MANUAL
 
 0/ Config Mode
-Press 3 times reset button not too slow, not too fast, to get into config mode, connect to the Esp32-Setup wifi and open this url http://192.168.4.1. Fill your ssid/password, ip of superscale, mdns name and save it (or edit these info on the config.json file directly). Restart, connect to the new network, use http://superscale.local (or the mdns name you've chosen), the page opens will show the ip on the top right, preferable to use as url because faster.
-
+Press 3 times reset button not too slow, not too fast, to get into config mode, connect to the Esp32-Setup wifi and open this url http://192.168.4.1(If you have a bonjour compatible browser, you can open any address containing "." and starting with HTTP (not HTTPS), eg "http://re.file" or "http://katapliktika.manitaria/", it's fun!). Fill your ssid/password, ip of superscale, mdns name and save it (or edit these info on the config.json file directly). Restart the board, it will connect to the new network, see 1/. 
+	
 1/ Startup : connect & sync: turn on
 -> red: no wifi or no superscale => turn router on & turn superscale on, 
 -> green: found & synced with superscale, good to go
@@ -28,6 +28,7 @@ Press 3 times reset button not too slow, not too fast, to get into config mode, 
 - disable save => classic tag 
 - transient + no disable save => transient "#"
 - not transient + no disable save => set&save "@"
+The command and checkbox settings are fetched when you press the button to confirm the association, so changes made after scanning the super-tag are applied.
 -> red, then green: could not set Command. If Command is not empty, maybe superscale is not available or network reception sucks.
 
 6/ Scan "Erase" RFID tag

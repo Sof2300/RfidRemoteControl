@@ -179,7 +179,7 @@ public:
 	}
 
 	void fetchSetId(String id){
-		String requrl=String()+baseUrl+"set?id="+id+"&nohtml=1";
+		String requrl=String()+baseUrl+"set?"+ID_KEYWORD+"="+id+"&nohtml=1";
 		requestbusy=true;
 		//		if(vbeep) vbeep->playSpecial("reconnu");
 		//		if(rgbled) rgbled->playColor(LED_ID_FOUND_COLOR);
@@ -220,7 +220,7 @@ public:
 
 	void fetchSetCommand(String command){
 		command=getCommandForRequest(command);
-		String requrl=String()+baseUrl+"set?command="+urlEncode(command)+"&nohtml=1";
+		String requrl=String()+baseUrl+"set?"+COMMAND_KEYWORD+"="+urlEncode(command)+"&nohtml=1";
 		requestbusy=true;
 		//		if(vbeep) vbeep->playSpecial("reconnu2");
 		//		if(rgbled) rgbled->playColor(LED_COMMAND_FOUND_COLOR);
@@ -249,7 +249,7 @@ public:
 	void fetchSaveCommand(String command){
 		command=getCommandForRequest(command);
 		statusText="";
-		String requrl=String()+baseUrl+"save?command="+urlEncode(command)+"&nohtml=1";
+		String requrl=String()+baseUrl+"save?"+COMMAND_KEYWORD+"="+urlEncode(command)+"&nohtml=1";
 		requestbusy=true;
 		AsyncHttpRequest::fetch(
 				requrl,
@@ -276,7 +276,7 @@ public:
 	}
 
 	void fetchCurrentLine(){
-		String requrl=String()+baseUrl+"get?date&id&command&argument";
+		String requrl=String()+baseUrl+"get?"+DATE_KEYWORD+"&"+ID_KEYWORD+"&"+COMMAND_KEYWORD+"&"+ARGUMENT_KEYWORD;
 		requestbusy=true;
 		AsyncHttpRequest::fetch(
 				requrl,
@@ -292,16 +292,16 @@ public:
 				return;
 			}
 			JsonObject line=doc.as<JsonObject>();
-			if(line.isNull() || !line.containsKey("date") || !line.containsKey("id") || !line.containsKey("command") || !line.containsKey("argument")) {
+			if(line.isNull() || !line.containsKey(DATE_KEYWORD) || !line.containsKey(ID_KEYWORD) || !line.containsKey(COMMAND_KEYWORD) || !line.containsKey(ARGUMENT_KEYWORD)) {
 				statusText="Superscale response did not contain the complete current line";
 				requestbusy=false;
 				dispatchEventSM(EVENT_GET_LINE_FAIL);
 				return;
 			}
-			savedLineData=line["date"] | "";
-			savedLineId=line["id"] | "";
-			savedLineCommand=line["command"] | "";
-			savedLineArgument=line["argument"] | "";
+			savedLineData=line[DATE_KEYWORD] | "";
+			savedLineId=line[ID_KEYWORD] | "";
+			savedLineCommand=line[COMMAND_KEYWORD] | "";
+			savedLineArgument=line[ARGUMENT_KEYWORD] | "";
 			statusText="";
 			requestbusy=false;
 			dispatchEventSM(EVENT_GET_LINE_SUCCESS);
@@ -317,7 +317,7 @@ public:
 	}
 
 	void fetchRestoreLine(){
-		String requrl=String()+baseUrl+"set?date="+urlEncode(savedLineData)+"&id="+urlEncode(savedLineId)+"&command="+urlEncode(savedLineCommand)+"&argument="+urlEncode(savedLineArgument)+"&nohtml=1";
+		String requrl=String()+baseUrl+"set?"+DATE_KEYWORD+"="+urlEncode(savedLineData)+"&"+ID_KEYWORD+"="+urlEncode(savedLineId)+"&"+COMMAND_KEYWORD+"="+urlEncode(savedLineCommand)+"&"+ARGUMENT_KEYWORD+"="+urlEncode(savedLineArgument)+"&nohtml=1";
 		requestbusy=true;
 		AsyncHttpRequest::fetch(
 				requrl,
@@ -389,9 +389,8 @@ public:
 		, COMM_CHANNEL_NAME);
 	}
 
-
 	void fetchGenerate(){
-		String requrl=String()+baseUrl+"generateIDGet?disable-rfid-id-save";
+		String requrl=String()+baseUrl+"generateIDGet?"+DISABLESAVE_KEYWORD;
 		requestbusy=true;
 		AsyncHttpRequest::fetch(
 				requrl,
@@ -409,13 +408,13 @@ public:
 				dispatchEventSM(EVENT_GENERATE_FAIL);
 				idset=false;
 			} else {
-				// Extract id and disable-rfid-id-save from JSON
-				String id = doc["id"] | "";
-				String disableRfidIdSaveValue = doc["disable-rfid-id-save"] | "";
+				// Extract the ID and association-save setting from JSON.
+				String id = doc[ID_KEYWORD] | "";
+				String disableRfidIdSaveValue = doc[DISABLESAVE_KEYWORD] | "";
 
 				if(id.length() > 0) {
 					Serial.println(String()+"DataManager:fetchGenerate id: "+id);
-					Serial.println(String()+"DataManager:fetchGenerate disable-rfid-id-save: "+disableRfidIdSaveValue);
+					Serial.println(String()+"DataManager:fetchGenerate "+DISABLESAVE_KEYWORD+": "+disableRfidIdSaveValue);
 					currentID = id;
 					disableRfidIdSave = disableRfidIdSaveValue;
 					idset=true;
@@ -476,11 +475,11 @@ public:
 
 		String saveUrl = baseUrl+"save?nohtml=1";
 		if (isNewID) {
-			String urldate=getConfig("date");
+			String urldate=getConfig(DATE_KEYWORD);
 			if(urldate.length()>0) {
-				saveUrl+=String()+"&command="+urldate+"&argument=TODAY()";
+				saveUrl+=String()+"&"+COMMAND_KEYWORD+"="+urldate+"&"+ARGUMENT_KEYWORD+"=TODAY()";
 			}
-			//saveUrl=saveUrl+"?id="+currentID+"&command="+urldate+"&argument=TODAY()&nohtml=1";
+			//saveUrl=saveUrl+"?"+ID_KEYWORD+"="+currentID+"&"+COMMAND_KEYWORD+"="+urldate+"&"+ARGUMENT_KEYWORD+"=TODAY()&nohtml=1";
 			Serial.println("Saving NEW ID Remotely: " + saveUrl);
 		} else {// It's known: Remote save just calls /save
 			Serial.println("Saving KNOWN ID Remotely: " + saveUrl);

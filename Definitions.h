@@ -10,7 +10,10 @@
 //////////////////////////////////////////
 
 #define SUPERSCALE_URL_FIELD "superscaleurl"
+#define DATE_KEYWORD "date"
+#define ID_KEYWORD "id"
 #define COMMAND_KEYWORD "command"
+#define ARGUMENT_KEYWORD "argument"
 #define DISABLESAVE_KEYWORD "disable-rfid-id-save"
 #define TRANSIENTTAG_KEYWORD "transient-tag"
 #define COMMANDDOT_KEYWORD "command:"

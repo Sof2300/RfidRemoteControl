@@ -378,16 +378,31 @@ public:
 		UndoOperation op = undoStack.back();
 		if (op.type == UndoOperation::SET) {
 			if (op.oldId.length() > 0) {
-				// It was a modification
-				return String() + "setting tag " + op.tag + " to " + op.newId;
+				return String() + "restore tag " + op.tag + " to " + op.oldId + " (replacing " + op.newId + ")";
 			} else {
-				// It was an append
-				return String() + "adding tag " + op.tag + " as " + op.newId;
+				return String() + "remove tag " + op.tag + " (currently set to " + op.newId + ")";
 			}
 		} else if (op.type == UndoOperation::ERASE) {
-			return String() + "erasing tag " + op.tag + " (was " + op.oldId + ")";
+			return String() + "restore tag " + op.tag + " with value " + op.oldId;
 		}
 		return "unknown operation";
+	}
+
+	String getLastUndoResultDescription() {
+		if (!canUndo()) {
+			return "no RFID change was undone";
+		}
+
+		UndoOperation op = undoStack.back();
+		if (op.type == UndoOperation::SET) {
+			if (op.oldId.length() > 0) {
+				return String() + "restored tag " + op.tag + " to " + op.oldId;
+			}
+			return String() + "removed tag " + op.tag + " (it had value " + op.newId + ")";
+		} else if (op.type == UndoOperation::ERASE) {
+			return String() + "restored tag " + op.tag + " with value " + op.oldId;
+		}
+		return "unknown RFID change";
 	}
 
 	bool performUndo() {

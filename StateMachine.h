@@ -5,6 +5,8 @@
 #include <Arduino.h>
 #include <string.h>
 #include <functional>
+#include <memory>
+#include <vector>
 
 // Define STATE_MACHINE_DEBUG before including this file to enable detailed diagnostics.
 class StateMachine;
@@ -64,6 +66,7 @@ public:
 	StateMachine* parent;
 	Transition* transitions;
 	State* nextSibling;
+	std::vector<std::unique_ptr<Transition>> ownedTransitions;
 
 	std::function<void()> _enterFunc;
 	std::function<void()> _leaveFunc;
@@ -77,9 +80,16 @@ public:
 	virtual void leave() { if (_leaveFunc) _leaveFunc(); }
 	virtual bool isMachine() { return false; }
 
+	Transition& addTransition(const char* eventName, const char* targetName = nullptr) {
+		auto transition = std::unique_ptr<Transition>(new Transition(this, eventName, targetName));
+		Transition& reference = *transition;
+		ownedTransitions.push_back(std::move(transition));
+		return reference;
+	}
+
 	// --- Fluent API Helpers moved to State ---
 	Transition& on(const char* eventName, const char* targetName = nullptr) {
-		return *new Transition(this, eventName, targetName);
+		return addTransition(eventName, targetName);
 	}
 	// A null target handles the event without leaving or re-entering this state.
 	Transition& onSelfInternal(const char* eventName) {
@@ -222,7 +232,7 @@ public:
 			sourceState = this; // Safe fallback to prevent crash
 		}
 
-		return *new Transition(sourceState, eventName, targetName);
+		return sourceState->addTransition(eventName, targetName);
 	}
 
     void onEnter(const char* stateName, std::function<void()> action) {
@@ -273,28 +283,35 @@ private:
 #endif
 
 	void doTransition(State* sourceLeaf, State* target) {
-		State* pathSrc[10]; int depthSrc = 0;
-		State* pathTarg[10]; int depthTarg = 0;
+		std::vector<State*> pathSrc;
+		std::vector<State*> pathTarg;
 
-		for (State* s = sourceLeaf; s; s = (State*)s->parent) pathSrc[depthSrc++] = s;
-		for (State* s = target; s; s = (State*)s->parent) pathTarg[depthTarg++] = s;
+		for (State* s = sourceLeaf; s; s = (State*)s->parent) pathSrc.push_back(s);
+		for (State* s = target; s; s = (State*)s->parent) pathTarg.push_back(s);
 
 		State* lca = nullptr;
-		int i = depthSrc - 1, j = depthTarg - 1;
+		int i = static_cast<int>(pathSrc.size()) - 1;
+		int j = static_cast<int>(pathTarg.size()) - 1;
 		if (sourceLeaf == target) {
 			lca = (State*)sourceLeaf->parent; i--; j--;
 		} else {
-			while (i >= 0 && j >= 0 && pathSrc[i] == pathTarg[j]) { lca = pathSrc[i]; i--; j--; }
+			while (i >= 0 && j >= 0 && pathSrc[static_cast<size_t>(i)] == pathTarg[static_cast<size_t>(j)]) {
+				lca = pathSrc[static_cast<size_t>(i)];
+				i--;
+				j--;
+			}
 		}
 
 		for (int k = 0; k <= i; k++) {
-			pathSrc[k]->leave();
-			if (pathSrc[k]->parent) pathSrc[k]->parent->activeChild = nullptr;
+			State* current = pathSrc[static_cast<size_t>(k)];
+			current->leave();
+			if (current->parent) current->parent->activeChild = nullptr;
 		}
 
 		for (int k = j; k >= 0; k--) {
-			if (pathTarg[k]->parent) pathTarg[k]->parent->activeChild = pathTarg[k];
-			pathTarg[k]->enter();
+			State* current = pathTarg[static_cast<size_t>(k)];
+			if (current->parent) current->parent->activeChild = current;
+			current->enter();
 		}
 	}
 };
